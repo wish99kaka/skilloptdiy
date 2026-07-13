@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from .contract_evidence import contract_delta_evidence
 from .edits import apply_atomic_edits, canonical_edit_key, merge_and_rank_atomic_edits, set_slow_update
+from .interfaces import EDITOR_CAPABILITY_ATOMIC_EDITS, require_editor_capability
 from .io import load_text, write_json, write_text
 from .models import (
     AtomicEdit,
@@ -517,6 +518,11 @@ class ExecutiveSkillOptimizer:
         *,
         run_dir: str | Path | None = None,
     ) -> ExecutiveOptimizationResult:
+        require_editor_capability(
+            self.editor,
+            EDITOR_CAPABILITY_ATOMIC_EDITS,
+            protocol="executive",
+        )
         if not train_tasks:
             raise ValueError("train_tasks must not be empty")
         if not validation_tasks:
@@ -615,7 +621,6 @@ class ExecutiveSkillOptimizer:
                     )
 
                 local_proposals: list[EditProposal] = []
-                invalid_proposals: list[EditProposal] = []
                 minibatches = reflection_minibatches(
                     train_report.results,
                     self.config.reflection_minibatch_size,
@@ -641,8 +646,10 @@ class ExecutiveSkillOptimizer:
                     )
                     for proposal in proposals:
                         if not proposal.edits:
-                            invalid_proposals.append(proposal)
-                            continue
+                            raise ValueError(
+                                "executive editor returned a non-atomic proposal "
+                                f"{proposal.name!r}; every proposal must contain atomic edits"
+                            )
                         proposal_policy_issues = evidence_guided_proposal_filter_issues(proposal)
                         if proposal_policy_issues:
                             self.reject_without_validation(
@@ -678,18 +685,6 @@ class ExecutiveSkillOptimizer:
                                 edits=penalize_edit_priorities(proposal.edits, penalty),
                             )
                         )
-
-                for proposal in invalid_proposals:
-                    self.reject_without_validation(
-                        epoch,
-                        proposal.name,
-                        "atomic_edits_required",
-                        proposal.rationale,
-                        {"proposal": proposal.to_dict(), "step": global_step},
-                        epoch_rejected,
-                        rejected_all,
-                        history,
-                    )
 
                 merged = merge_and_rank_atomic_edits(local_proposals, budget=budget)
                 if not merged.selected:

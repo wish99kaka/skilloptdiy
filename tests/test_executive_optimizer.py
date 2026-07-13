@@ -13,6 +13,7 @@ from textskill_optimizer.executive_optimizer import (
     reflection_minibatches,
     scheduled_learning_rate,
 )
+from textskill_optimizer.interfaces import EDITOR_CAPABILITY_ATOMIC_EDITS
 from textskill_optimizer.models import AtomicEdit, EditProposal, EvaluationReport, OptimizerStateUpdate, RejectedProposal, Score, Task, TaskOutput, TaskResult
 from textskill_optimizer.plugins.coding import CodingScorer, coding_retryable_anomaly_reasons
 
@@ -56,7 +57,56 @@ class NumericScorer:
         return Score(value, value == 1.0)
 
 
+class AtomicEditor:
+    capabilities = frozenset({EDITOR_CAPABILITY_ATOMIC_EDITS})
+
+
 class ExecutiveOptimizerTests(unittest.TestCase):
+    def test_optimize_rejects_editor_without_atomic_capability_before_evaluation(self) -> None:
+        class FailIfRun:
+            def run(self, skill_text: str, task: Task) -> TaskOutput:
+                raise AssertionError("evaluation must not start with an incompatible editor")
+
+        optimizer = ExecutiveSkillOptimizer(
+            FailIfRun(),
+            ExpectedRulesScorer(),
+            object(),
+            ExecutiveOptimizerConfig(enable_slow_update=False),
+        )
+
+        with self.assertRaisesRegex(ValueError, "atomic_edits"):
+            optimizer.optimize(
+                "# Skill\n",
+                [Task(id="train", input="", expected=[])],
+                [Task(id="selection", input="", expected=[])],
+            )
+
+    def test_optimize_rejects_full_replacement_from_atomic_editor(self) -> None:
+        class MisconfiguredEditor:
+            capabilities = frozenset({EDITOR_CAPABILITY_ATOMIC_EDITS})
+
+            def propose(self, skill_text, train_results, *, epoch, **kwargs):
+                return [EditProposal(name="whole-document", skill_text="# Replacement\n")]
+
+        optimizer = ExecutiveSkillOptimizer(
+            SkillTextRunner(),
+            ExpectedRulesScorer(),
+            MisconfiguredEditor(),
+            ExecutiveOptimizerConfig(
+                epochs=1,
+                rollout_batch_size=1,
+                reflection_minibatch_size=1,
+                enable_slow_update=False,
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "returned a non-atomic proposal"):
+            optimizer.optimize(
+                "# Skill\n",
+                [Task(id="train", input="", expected=[])],
+                [Task(id="selection", input="", expected=[])],
+            )
+
     def test_validation_gate_config_rejects_impossible_majority(self) -> None:
         with self.assertRaises(ValueError):
             ExecutiveOptimizerConfig(
@@ -339,7 +389,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertEqual([kind for kind, _ in batches], ["failure", "failure", "success"])
 
     def test_minibatch_edits_merge_and_pass_strict_selection_gate(self) -> None:
-        class DuplicateEditor:
+        class DuplicateEditor(AtomicEditor):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -379,7 +429,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertEqual(accepted[0].metadata["ranked_edits"][0]["support"], 2)
 
     def test_early_stop_validation_score_skips_training_when_initial_is_target(self) -> None:
-        class FailingEditor:
+        class FailingEditor(AtomicEditor):
             def propose(self, *args, **kwargs):
                 raise AssertionError("editor should not be called after target validation score")
 
@@ -409,7 +459,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertEqual(written["stop_reason"], "early_stop_validation_score_target")
 
     def test_early_stop_validation_score_stops_after_accepted_target_candidate(self) -> None:
-        class CountingEditor:
+        class CountingEditor(AtomicEditor):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -452,7 +502,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertEqual(editor.calls, 1)
 
     def test_rejected_buffer_is_available_to_later_batch_in_same_epoch(self) -> None:
-        class BufferEditor:
+        class BufferEditor(AtomicEditor):
             def __init__(self) -> None:
                 self.buffers = []
 
@@ -487,7 +537,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertIn("Good Rule", result.best_skill_text)
 
     def test_evidence_guided_guard_only_proposal_is_rejected_before_selection_gate(self) -> None:
-        class GuardOnlyEditor:
+        class GuardOnlyEditor(AtomicEditor):
             def propose(self, skill_text, train_results, *, epoch, **kwargs):
                 return [
                     EditProposal(
@@ -639,7 +689,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertEqual(grounded_issues, [])
 
     def test_rejected_buffer_persists_to_next_epoch(self) -> None:
-        class BufferEditor:
+        class BufferEditor(AtomicEditor):
             def __init__(self) -> None:
                 self.buffers = []
 
@@ -674,7 +724,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertEqual(result.accepted_steps, 1)
 
     def test_repeated_generic_contract_audit_is_penalized_in_ranking(self) -> None:
-        class RepeatingEditor:
+        class RepeatingEditor(AtomicEditor):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -787,7 +837,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertLess(new_mechanism_penalty, repeat_penalty)
 
     def test_early_stop_rejection_limit_writes_checkpoint_and_stops_batches(self) -> None:
-        class BadEditor:
+        class BadEditor(AtomicEditor):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -834,7 +884,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertEqual(written["stop_reason"], "early_stop_validation_rejection_limit")
 
     def test_optimize_writes_timing_events_for_candidate_gate(self) -> None:
-        class BadEditor:
+        class BadEditor(AtomicEditor):
             def propose(self, skill_text, train_results, *, epoch, **kwargs):
                 return [
                     EditProposal(
@@ -889,7 +939,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
                 self.task_ids.append(task.id)
                 return super().run(skill_text, task)
 
-        class RuleEditor:
+        class RuleEditor(AtomicEditor):
             def propose(self, skill_text, train_results, *, epoch, **kwargs):
                 return [
                     EditProposal(
@@ -928,7 +978,7 @@ class ExecutiveOptimizerTests(unittest.TestCase):
         self.assertEqual(result.best_validation_score, 1.0)
 
     def test_epoch_state_update_can_pass_gate_and_update_meta_skill(self) -> None:
-        class SlowEditor:
+        class SlowEditor(AtomicEditor):
             def propose(self, skill_text, train_results, *, epoch, **kwargs):
                 return [
                     EditProposal(

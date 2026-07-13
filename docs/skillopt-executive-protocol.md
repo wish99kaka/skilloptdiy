@@ -2,9 +2,16 @@
 
 Date: 2026-06-23
 
+> Status: supported historical contract-aware extension. This protocol is not
+> paper-faithful and cannot produce a `paper_faithful_*` claim. Never use its
+> commands to access the consumed `coding-hidden-v2` locked split.
+
 ## Purpose
 
-`--protocol executive` is the paper-style optimizer path. The legacy optimizer remains available for historical replay.
+`--protocol executive` is the contract-aware atomic-edit optimizer path. The
+legacy optimizer remains available for historical replay; the independent
+paper-faithful path is defined by
+`docs/specs/skillopt-paper-faithful-roadmap.md`.
 
 ## Implemented Controls
 
@@ -25,6 +32,18 @@ Date: 2026-06-23
 Fast edits cannot modify the protected slow-update field. Meta Skill text is saved for audit but is not deployed with the target agent.
 
 ## External Editor Contract
+
+Before target evaluation, the command receives a local capability probe:
+
+```json
+{"operation": "capabilities"}
+```
+
+An executive-compatible command must answer without calling a model:
+
+```json
+{"capabilities": ["atomic_edits"]}
+```
 
 Reflection returns atomic edits:
 

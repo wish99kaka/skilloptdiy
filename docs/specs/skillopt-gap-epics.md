@@ -2,6 +2,11 @@
 
 Date: 2026-06-30
 
+> Historical Epic record for the completed contract-aware campaign. It is not
+> the active roadmap and its locked-test conditions are not authorization to
+> rerun the consumed split. Use `skillopt-paper-faithful-roadmap.md` for new
+> work.
+
 ## Purpose
 
 Turn the current paper-gap analysis into implementation Epics that move the project from "SkillOpt-style pipeline works" to "SkillOpt-style optimization result is defensible."
@@ -447,8 +452,13 @@ The project can make a narrow but defensible claim about SkillOpt-style skill op
 4. Epic 4 fourth: otherwise validation is too costly.
 5. Epic 5 last: only after local development evidence passes.
 
-## Current Recommended Next Story
+## Superseded Final Planned Story
 
-Run guarded v5 targeted smoke through `docs/specs/skillopt-experiment-runbook.md` after injecting optimizer env from `/Users/bytedance/model_key`. If Codex network egress is blocked, run the workflow from a normal local terminal and inspect the generated artifacts. Treat the result as mechanism evidence only. Before any scale-up, use `validation_confirmation_rounds >= 1`.
+The final pre-completion recommendation was to run guarded v5 targeted smoke.
+That run and the later Stage 4–7 campaign are complete. Do not execute this
+historical recommendation; all new work follows
+`skillopt-paper-faithful-roadmap.md`.
 
-Reason: v4 showed that outcome-aware proposal metadata and local ranking are not enough. The run improved aggregate score but still failed seed wins and regressed a protected or anti-regression contract. The next question is whether the stronger evidence-guided candidate guard blocks that failure mode before expensive scale-up.
+Historical reason: v4 showed that outcome-aware proposal metadata and local
+ranking were insufficient because the run improved aggregate score while
+failing seed wins and regressing a protected or anti-regression contract.

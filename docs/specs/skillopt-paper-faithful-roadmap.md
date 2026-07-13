@@ -3,9 +3,11 @@ id: SPEC-skillopt-paper-faithful-roadmap
 status: active
 date: 2026-07-13
 normative_source:
-  - ../papers/paper-notes.md
+  - ../papers/skillopt-2605.23904.pdf@arxiv:2605.23904v2
 reference_implementation:
-  - https://github.com/microsoft/SkillOpt
+  - https://github.com/microsoft/SkillOpt/tree/e4ea6a6771e797ef820cdd8bfea64c57e0481065
+source_lock:
+  - ../papers/source-lock.json
 supersedes_as_active_plan:
   - skillopt-paper-gap-plan.md
   - skillopt-gap-epics.md
@@ -293,22 +295,23 @@ the paper and must be recorded in the run manifest.
 
 ## 9. Execution Roadmap
 
-| Phase | Deliverables | Exit gate |
+The pre-M0 findings were measured against repository commit
+`91c00b9c582e48b077c9282f4ccc80db26341653` on 2026-07-13. The table below
+records the status of the repository revision that contains it. The WP sections
+in Section 13 are the only executable plan; this table is only a status index.
+
+| Phase | Status | Work package |
 | --- | --- | --- |
-| 0. Freeze and provenance | Archive extension v1 claim; correct Stage 7 status; create repository baseline commit/tag; pin paper and official references | Existing 258 tests pass and every artifact is tied to a code/config/data lineage |
-| 1. Spec and profile | Machine-readable paper profile, forbidden-override validation, Algorithm 1 event schema, claim taxonomy | A run can be classified without reading implementation code |
-| 2. Data firewall | Scalar-only selection interface, isolated test controller, consumed-split registry, claim eligibility checker | Selection sentinels never reach optimizer payloads; old Stage 7 cannot produce a paper claim |
-| 3. Patch fast core | Injected backend, analyst prompts, true refinement, hierarchical merge, ranking, four patch ops, apply reports, strict gate/cache | Scripted event trace matches Algorithm 1 fast loop |
-| 4. Epoch state | Epoch-local buffer, current/best state, score cache, scheduler, deterministic data plan, resumable checkpoints | Buffer resets and crash/resume matches an uninterrupted fake run |
-| 5. Slow/meta | Adjacent-epoch comparison, four-way longitudinal classification, protected slow field, gated slow candidate, future-only meta | Algorithm 1 epoch-boundary trace matches the paper |
-| 6. Mechanism completeness | `A>1` accumulation, stable analyst concurrency, autonomous LR, `rewrite_from_suggestions`, complete resume | Paper-supported modes have independent mechanism tests; default remains patch/cosine |
-| 7. Zero-cost conformance | Golden trace, static import/prompt scans, data-access audit, upstream-deviation checks, provenance linter | All checks pass before any paid run |
-| 8. Cheap development smoke | One seed, open development data, reduced sizes but complete call graph and strict gate | Merge/rank/slow/meta are actually exercised; artifacts complete; budget respected |
-| 9. Fresh pilot | New or official benchmark, full default profile, one non-headline pilot seed, complete cost capture | Accepted update exists; selection is not saturated; no leakage/drift; cost is affordable |
-| 10. Confirmatory development | Three preregistered seeds and same-run eligible baselines | Mean beats strongest simple baseline by the preregistered margin and at least 2/3 seeds improve |
-| 11. Ablations | One-factor LR, buffer, slow/meta, batch/minibatch, accumulation, patch/rewrite comparisons | Each run differs from the frozen default in exactly one registered factor |
-| 12. Fresh held-out matrix | Freeze all SkillOpt/baseline/ablation artifacts, then evaluate them atomically on one untouched test split | Eligible for `paper_faithful_heldout`; test cannot be reused after code/prompt changes |
-| 13. Paper breadth | Paper benchmarks, multiple targets/harnesses, transfers, remaining baselines | Claims increase only to the breadth actually measured |
+| 0. Freeze and provenance | Completed | WP0 |
+| 1. Spec and profile | Next | WP1 |
+| 2. Data firewall | Pending | WP1 |
+| 3. Patch fast core | Pending | WP2 |
+| 4. Epoch state | Pending | WP3 |
+| 5. Slow/meta | Pending | WP3 |
+| 6. Mechanism completeness | Pending | WP3 |
+| 7. Zero-cost conformance | Pending | WP4 |
+| 8–11. Development evidence | Blocked by Phase 7 | WP5 |
+| 12–13. Held-out evidence and breadth | Blocked by Phase 11 | WP6 |
 
 ## 10. Conformance Test Program
 
@@ -430,26 +433,157 @@ A profile other than `paper-faithful-v1` cannot create a
 `paper_faithful_*` claim. A split already consumed by another protocol cannot
 create a new paper-faithful held-out claim.
 
-## 13. Immediate Work Queue
+## 13. Next Execution Plan
 
-Execute in this order:
+### 13.1 Pre-M0 review baseline
 
-1. Correct current-state and README references; freeze Stage 5/7 as extension
-   v1; never modify their raw artifacts.
-2. Establish the repository's first reproducible baseline commit and tag. The
-   current project files are untracked, so implementation must not proceed
-   without a recoverable starting point.
-3. Add the paper profile, claim taxonomy, lineage schema, and consumed-split
-   registry.
-4. Write the selection/test firewall and extension-isolation tests first.
-5. Scaffold `textskill_optimizer.paper` with injected optimizer backend and
-   independent paper edit types.
-6. Implement patch application, strict gate/cache, and scheduler.
-7. Implement reflection, true refinement, hierarchical merge, and ranking.
-8. Implement epoch buffer, slow/meta, and paper CLI/artifact gates.
-9. Run only zero-cost conformance tests, then one cheap development smoke.
-10. Design and preregister the official/fresh benchmark campaign before the
-    first full-profile run.
+The project-wide review on 2026-07-13 established these pre-M0 facts:
+
+- The reproducible repository baseline is complete at commit
+  `91c00b9c582e48b077c9282f4ccc80db26341653`, tagged
+  `contract-aware-extension-v1`, with a clean worktree and `origin/main` at the
+  same commit.
+- `python3 -m pytest tests -q` passed `258` tests plus `2` subtests, while the
+  default command collected benchmark fixtures and failed. M0 resolved this by
+  setting pytest `testpaths` to `tests`.
+- The README extraction and coding offline examples passed, while the existing
+  `executive` protocol could exit successfully without optimizing when given a
+  built-in full-skill editor. M0 resolved this with an explicit editor
+  capability check and non-atomic response failure.
+- `paper-faithful-v1` is specified but has no package, CLI protocol, or
+  conformance suite. It is not releasable or claim-eligible.
+- Stage 7 is consumed historical `contract-aware-extension-v1` evidence. Its
+  `20/20` result cannot be relabeled or reused for a paper-faithful held-out
+  claim.
+- No paid experiment is authorized until Phase 7 zero-cost conformance passes.
+
+### 13.2 Work packages and gates
+
+Execute one work package at a time. Do not begin a package until its declared
+dependencies pass.
+
+#### WP0 — Close engineering and provenance baseline
+
+Status: completed on 2026-07-13. Dependencies: none.
+
+1. Pin the normative paper as arXiv `2605.23904v2` and record the tracked PDF
+   SHA256 `87f7f0f323b1671e9202b3ebb1596e909e507c71ecd1b360b0075a5ee1727fe3`.
+2. Pin the official reference to Microsoft SkillOpt `v0.2.0`, commit
+   `e4ea6a6771e797ef820cdd8bfea64c57e0481065`. Record checksums for every
+   reused source/prompt and maintain an upstream-deviation manifest. A newer
+   upstream version requires an explicit re-pin; `main` is never a valid
+   reference by itself.
+3. Add pytest `testpaths = ["tests"]`, reproducible development dependencies,
+   and CI for the supported Python versions. Establish measured coverage before
+   choosing a coverage threshold; do not invent an arbitrary number.
+4. Add editor capability validation so `--protocol executive` fails before
+   execution when its editor cannot produce atomic edits. Do not expand the old
+   optimizer to solve paper requirements.
+5. Correct historical spec/runbook wording and mark the Stage 4–7 operator
+   procedures completed. Never modify the raw Stage 5/7 artifacts.
+
+Exit gate:
+
+- default and scoped test commands run the same intended suite and pass
+- CI reproduces the local gate from a clean environment
+- official, paper, local, prompt, and reused-source identities are immutable
+- incompatible executive/editor combinations return a clear non-zero error
+- no active document instructs an operator to consume `coding-hidden-v2`
+
+#### WP1 — Define the paper contract before implementation
+
+Dependencies: WP0.
+
+1. Add the machine-readable `paper-faithful-v1` profile and reject all forbidden
+   extension overrides.
+2. Add claim taxonomy, lineage schema, consumed-split registry, and Algorithm 1
+   event schema.
+3. Scaffold `textskill_optimizer.paper` with an injected `OptimizerBackend` and
+   independent paper edit/state types.
+4. Write import-firewall, selection-sentinel, test-access, strict-tie, and
+   consumed-split tests before implementing the engine.
+
+Exit gate: a fake run can be classified and rejected for protocol or provenance
+violations without invoking a model or reading engine internals.
+
+#### WP2 — Implement the paper fast loop
+
+Dependencies: WP1.
+
+1. Implement `append`, `insert_after`, `replace`, and `delete` with protected
+   slow-field enforcement and one apply report per edit.
+2. Implement separate failure/success reflection and real semantic teacher
+   refinement capped at three rounds.
+3. Implement failure merge, success merge, failure-prioritized final merge, and
+   optimizer-model ranking clipped to top `L`; local string ranking is not an
+   allowed success fallback.
+4. Implement strict scalar selection gating, current/best separation, skill-hash
+   score cache, scheduler, and replayable step artifacts.
+
+Exit gate: a deterministic fake backend produces a golden event trace matching
+Algorithm 1, and every candidate can be reconstructed from its input skill,
+ranked patch, and apply report.
+
+#### WP3 — Implement epoch state and remaining mechanisms
+
+Dependencies: WP2.
+
+1. Implement epoch-local rejected-step buffers and deterministic data plans.
+2. Implement checkpoints whose resumed event/artifact sequence matches an
+   uninterrupted run.
+3. Skip real slow/meta updates in epoch 1. From epoch 2, compare adjacent epoch
+   skills on the same training samples, generate four-way longitudinal state,
+   gate the protected slow candidate, and expose meta guidance only to future
+   optimizer stages.
+4. Add `A>1` accumulation, stable analyst concurrency, autonomous LR, and
+   `rewrite_from_suggestions` after the default patch/cosine path passes.
+
+Exit gate: Phase 4–6 mechanism tests pass independently, including buffer reset,
+resume equivalence, slow gating, and meta visibility.
+
+#### WP4 — Zero-cost conformance
+
+Dependencies: WP3.
+
+Run golden traces, static import and prompt scans, selection/test data-access
+audits, patch replay, upstream-deviation checks, lineage validation, and claim
+eligibility tests using scripted target and optimizer backends.
+
+Exit gate: Phase 7 passes as one automated gate. Failure keeps all paid work
+blocked.
+
+#### WP5 — Development evidence
+
+Dependencies: WP4.
+
+1. Run one cheap full-call-graph smoke on open development data.
+2. Preregister one full-profile pilot, including model identities, split, scorer,
+   retries, seed, budgets, stop conditions, and artifact hashes.
+3. Use SearchQA as the first paper benchmark anchor. Run a reduced development
+   slice only for smoke, then the official split/configuration for a reproduction
+   claim.
+4. If a separate coding claim is still useful, seal `coding-hidden-v3` before
+   optimization with structurally distinct tasks and preserved family/contract
+   metadata.
+5. After a successful pilot, run three confirmatory seeds with same-run
+   `no_skill`, human-skill, and one-shot baselines, followed by registered
+   single-factor ablations.
+
+Exit gate: the preregistered development gate passes, selection is not
+saturated, call/token/time scope is complete, and no test data was accessed.
+
+#### WP6 — Atomic held-out evidence and breadth
+
+Dependencies: WP5.
+
+Freeze the default method, baselines, and published ablations before one atomic
+evaluation on an untouched test split. Expand to additional paper benchmarks,
+models, harnesses, baselines, and transfer only after this first held-out gate
+passes.
+
+Exit gate: claim class is generated from measured scope. The first eligible
+result may be called `paper_faithful_heldout`; broader replication language
+requires the corresponding measured breadth.
 
 ## 14. Non-Goals and Stop Rules
 
@@ -463,19 +597,24 @@ Execute in this order:
 - Do not expand toward 52 cells before one official benchmark passes.
 - Do not claim paper-equivalent cost until target-agent usage is captured.
 
-## 15. Milestones and Definition of Done
+## 15. Claim Milestones
 
-- **M0 — Paper patch core:** default patch-mode Algorithm 1 trace passes.
-- **M1 — Paper mechanisms:** accumulation, concurrency, autonomous LR, rewrite,
-  and resume have independent mechanism evidence.
-- **M2 — Development evidence:** three-seed paper-faithful development matrix
-  passes its preregistered gate.
-- **M3 — Fresh held-out evidence:** a new atomic test matrix supports a
+This is a claim-level summary, not a second execution plan.
+
+- **M0 — Baseline closed:** WP0 passes and provenance plus engineering gates are
+  reproducible.
+- **M1 — Paper contract enforced:** WP1 passes; extension semantics and
+  selection/test data cannot enter paper optimization.
+- **M2 — Paper mechanisms conformant:** WP2–WP4 pass; the complete supported
+  mechanism set has zero-cost conformance evidence.
+- **M3 — Development evidence:** the three-seed paper-faithful development
+  matrix passes its preregistered gate.
+- **M4 — Fresh held-out evidence:** a new atomic test matrix supports a
   `paper_faithful_heldout` claim.
-- **M4 — Paper-scale replication:** measured breadth supports the claimed
+- **M5 — Paper-scale replication:** measured breadth supports the claimed
   benchmark/model/harness scope.
 
-The default patch core is roughly 18–26 engineering person-days. The complete
-mechanism set, including rewrite, autonomous LR, and fully equivalent resume,
-is roughly 29–43 person-days. External experiment runtime and model cost are
-additional and are controlled by the evidence ladder above.
+Do not make a calendar commitment from the old executive code size. Estimate
+remaining implementation time only after WP1 fixes the reuse boundary and WP2
+completes one end-to-end fake-backend vertical slice. External experiment
+runtime and model cost remain controlled by the evidence ladder above.

@@ -229,21 +229,9 @@ Post-report update: after this final-v2 experiment, the hidden benchmark was
 expanded to `train=8`, `valid=4`, and `holdout=4`. The scores in this report
 remain the evidence for the original final-v2 artifact.
 
-## Recommended Next Step
+## Superseded Next Step
 
-After the benchmark expansion, rerun the same final pipeline and compare
-initial versus optimized skill across agents:
-
-- Coco
-- OpenAI-compatible external agent
-- Codex
-
-Priority categories:
-
-- Nested data access
-- Sorting and stable ordering
-- Parsing malformed input
-- Date/time boundaries
-- Numeric rounding and precision
-- Empty and singleton collections
-- Optional or missing fields
+The earlier recommendation to rerun this pipeline is obsolete. The
+contract-aware campaign and its one locked evaluation are complete. Do not
+rerun `coding-hidden-v2`; follow
+`docs/specs/skillopt-paper-faithful-roadmap.md` for all new work.

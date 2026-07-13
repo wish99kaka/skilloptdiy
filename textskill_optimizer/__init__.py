@@ -1,6 +1,12 @@
 """Text-space optimization for reusable agent skill documents."""
 
-from .interfaces import SkillEditor, SkillRunner, SkillScorer
+from .interfaces import (
+    EDITOR_CAPABILITY_ATOMIC_EDITS,
+    EDITOR_CAPABILITY_FULL_REPLACEMENT,
+    SkillEditor,
+    SkillRunner,
+    SkillScorer,
+)
 from .command_editor import CommandEditorConfig, CommandSkillEditor
 from .models import (
     AtomicEdit,
@@ -25,6 +31,8 @@ from .executive_optimizer import (
 __all__ = [
     "AtomicEdit",
     "EditProposal",
+    "EDITOR_CAPABILITY_ATOMIC_EDITS",
+    "EDITOR_CAPABILITY_FULL_REPLACEMENT",
     "ExecutiveOptimizationResult",
     "ExecutiveOptimizerConfig",
     "ExecutiveSkillOptimizer",

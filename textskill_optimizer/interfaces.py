@@ -7,6 +7,23 @@ from typing import Any, Protocol
 from .models import EditProposal, Score, Task, TaskOutput, TaskResult
 
 
+EDITOR_CAPABILITY_ATOMIC_EDITS = "atomic_edits"
+EDITOR_CAPABILITY_FULL_REPLACEMENT = "full_skill_replacement"
+
+
+def require_editor_capability(editor: object, capability: str, *, protocol: str) -> None:
+    """Reject an editor that cannot satisfy a protocol before work begins."""
+
+    capabilities = frozenset(getattr(editor, "capabilities", ()))
+    if capability in capabilities:
+        return
+    declared = ", ".join(sorted(capabilities)) or "none"
+    raise ValueError(
+        f"{protocol} protocol requires editor capability {capability!r}; "
+        f"{type(editor).__name__} declares: {declared}"
+    )
+
+
 class SkillRunner(Protocol):
     """Executes one task using the current skill document."""
 
@@ -24,6 +41,8 @@ class SkillScorer(Protocol):
 class SkillEditor(Protocol):
     """Turns scored trajectories into bounded skill-document edits."""
 
+    capabilities: frozenset[str]
+
     def propose(
         self,
         skill_text: str,
@@ -34,4 +53,4 @@ class SkillEditor(Protocol):
         meta_skill: str = "",
         optimizer_controls: dict[str, Any] | None = None,
     ) -> list[EditProposal]:
-        """Return candidate replacement skill documents."""
+        """Return candidate skill-document edits."""

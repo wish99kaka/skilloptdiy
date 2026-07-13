@@ -1,5 +1,9 @@
 # SkillOpt Stage 5 Operator README
 
+> Completed historical procedure. Stage 5 finished and its artifacts are
+> frozen as contract-aware evidence. Do not execute the prompts or manifests in
+> this file; retain them only for audit.
+
 ## Purpose
 
 Run Stage 5 same-run baseline matrix with low Codex context cost.

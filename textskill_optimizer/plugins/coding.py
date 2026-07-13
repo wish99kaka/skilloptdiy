@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from textskill_optimizer.interfaces import EDITOR_CAPABILITY_FULL_REPLACEMENT
 from textskill_optimizer.models import EditProposal, Score, Task, TaskOutput, TaskResult
 from textskill_optimizer.usage_ledger import append_usage_event, estimate_tokens_from_chars
 
@@ -244,6 +245,8 @@ def _as_int(value: Any) -> int | None:
 
 class CodingSkillEditor:
     """Adds a compact coding loop rule after failed training trajectories."""
+
+    capabilities = frozenset({EDITOR_CAPABILITY_FULL_REPLACEMENT})
 
     def propose(
         self,

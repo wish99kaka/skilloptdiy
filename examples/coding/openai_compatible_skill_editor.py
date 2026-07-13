@@ -135,6 +135,18 @@ def main() -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if optimizer_payload.get("operation") == "capabilities":
+        print(
+            json.dumps(
+                {
+                    "capabilities": [
+                        "atomic_edits",
+                        "full_skill_replacement",
+                    ]
+                }
+            )
+        )
+        return 0
     try:
         request_payload, url, api_key, timeout = build_chat_request_from_env(optimizer_payload)
     except ValueError as exc:

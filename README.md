@@ -26,7 +26,9 @@ No validation improvement, no skill update.
   historical replay.
 - `--protocol executive` selects the existing contract-aware extension with
   external-editor proposals, contract feedback, paired confirmation, and local
-  guards.
+  guards. It requires an editor with the `atomic_edits` capability; the built-in
+  full-replacement editors fail before evaluation instead of producing a no-op
+  executive run.
 - The isolated `paper-faithful-v1` protocol is the active implementation
   target; it is specified but not yet exposed by the CLI.
 
@@ -60,6 +62,14 @@ returns a compact result packet instead of expanding raw run artifacts.
 Stage-specific operator READMEs and result templates live under `docs/ops/`.
 
 ## Quick start
+
+Install the project and its reproducible test dependency, then run the default
+gate:
+
+```bash
+python3 -m pip install --editable ".[dev]"
+python3 -m pytest -q
+```
 
 Run the built-in extraction example without network access:
 
@@ -186,7 +196,9 @@ python3 -m textskill_optimizer.cli optimize \
   --out runs/coding-command-editor-demo
 ```
 
-The editor command receives JSON on stdin:
+For `--protocol executive`, the editor command first receives
+`{"operation":"capabilities"}` and must return an `atomic_edits` capability
+without calling a model. Normal reflection calls then receive JSON on stdin:
 
 ```json
 {

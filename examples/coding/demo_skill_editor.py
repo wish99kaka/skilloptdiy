@@ -26,6 +26,9 @@ def main() -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if payload.get("operation") == "capabilities":
+        print(json.dumps({"capabilities": ["full_skill_replacement"]}))
+        return 0
     skill_text = payload["skill_text"]
     failures = [
         result

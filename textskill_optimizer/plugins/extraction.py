@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
+from textskill_optimizer.interfaces import EDITOR_CAPABILITY_FULL_REPLACEMENT
 from textskill_optimizer.models import EditProposal, Score, Task, TaskOutput, TaskResult
 
 ALIAS_LINE_RE = re.compile(
@@ -66,6 +67,8 @@ class JsonFieldScorer:
 
 class AliasMiningEditor:
     """Adds field aliases found in failed trajectories."""
+
+    capabilities = frozenset({EDITOR_CAPABILITY_FULL_REPLACEMENT})
 
     def propose(
         self,

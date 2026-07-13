@@ -1,8 +1,13 @@
 # SkillOpt Operator Handoff
 
+> Status: completed historical handoff for the contract-aware campaign. Do not
+> use it to rerun Stage 4, Stage 5, or the consumed Stage 7 split. New execution
+> contracts must be created under the paper-faithful roadmap.
+
 ## Purpose
 
-Run SkillOpt experiments without spending Codex context on long execution logs or large JSON artifacts.
+Record how the completed campaign delegated mechanical execution without
+spending Codex context on long logs or large JSON artifacts.
 
 Codex owns strategy, code changes, and result review. A runner agent or human operator owns mechanical execution and returns only the result packet defined here.
 

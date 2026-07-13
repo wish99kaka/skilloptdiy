@@ -1,5 +1,9 @@
 # SkillOpt Stage 4 Operator README
 
+> Completed historical procedure. Stage 4 finished and its artifacts are
+> frozen as contract-aware evidence. Do not execute the prompts or manifests in
+> this file; retain them only for audit.
+
 ## Purpose
 
 Run Stage 4 full-selection executive-only with low Codex context cost.

@@ -38,6 +38,8 @@ class CommandSkillEditor:
     """Calls an external process to propose skill edits.
 
     The process receives JSON on stdin and must write JSON on stdout.
+    Before executive optimization, it receives ``{"operation": "capabilities"}``
+    and must return ``{"capabilities": [...]}`` without calling a model.
     Accepted output shapes:
       - {"proposals": [{"name": ..., "edits": [...], "rationale": ...}]}
       - Legacy full replacements using skill_text remain supported.
@@ -47,6 +49,23 @@ class CommandSkillEditor:
         if not config.command.strip():
             raise ValueError("CommandEditorConfig.command must not be empty")
         self.config = config
+        self._capabilities: frozenset[str] | None = None
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """Probe and cache capabilities declared by the configured command."""
+
+        if self._capabilities is not None:
+            return self._capabilities
+        raw = self._invoke({"operation": "capabilities"})
+        values = raw.get("capabilities") if isinstance(raw, dict) else None
+        if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+            raise ValueError(
+                "Editor capability probe must return a JSON object with a string "
+                "'capabilities' list"
+            )
+        self._capabilities = frozenset(item.strip() for item in values if item.strip())
+        return self._capabilities
 
     def propose(
         self,

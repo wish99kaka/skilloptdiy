@@ -2,9 +2,15 @@
 
 Date: 2026-07-13
 
+> Status: completed historical runbook for the contract-aware Stage 4–7
+> campaign. Do not execute its manifests or Stage 7 commands. New work follows
+> `docs/specs/skillopt-paper-faithful-roadmap.md`.
+
 ## Purpose
 
-This is the operational entry point for running SkillOpt experiments. It records the execution order, required artifacts, and stop conditions. It does not redefine experiment quality; all decisions must come from the mechanical gate reports and run artifacts.
+This records the completed campaign's execution order, required artifacts, and
+stop conditions for audit. It is not an operational entry point for new
+experiments and does not define the paper-faithful protocol.
 
 Background and rationale live in:
 
@@ -63,14 +69,14 @@ The completed Stage 7 handoff is archived in
 `docs/ops/skillopt-stage7-operator-readme.md` and `runs/operator-packets/`.
 Those instructions are historical and must not be executed again.
 
-1. Confirm fixed boundaries: Coco local default is unchanged and the benchmark is `coding-hidden-v2`. Locked test is out of scope except for an explicitly approved Stage 7 Phase B.
+1. Confirm fixed boundaries: Coco local default is unchanged and the benchmark is `coding-hidden-v2`. The consumed locked test is always out of scope.
 2. Confirm Python is 3.10 or newer.
 3. Inject `EXTERNAL_LLM_API_KEY`, `EXTERNAL_LLM_BASE_URL`, and `EXTERNAL_LLM_MODEL` from `/Users/bytedance/model_key` into the shell only.
 4. Confirm the manifest stage matches the intended decision:
    - `mechanism_smoke` for targeted smoke.
    - `full_selection_development` for full-selection executive-only.
    - `same_run_baseline_matrix` for final same-run baseline comparison.
-   - `locked_test_once` for the reviewed Stage 7 manifest only.
+   - Historical `locked_test_once` artifacts are audit-only and must not be executed.
 5. Run `work/skillopt_preflight.py --quiet` on the manifest.
 6. For targeted smoke, run `work/skillopt_workflow.py run-smoke --manifest <manifest>`.
 7. If a run already exists, run `work/skillopt_workflow.py report --run-dir <run-dir>` before reading results.
@@ -80,7 +86,7 @@ Those instructions are historical and must not be executed again.
 11. For full-selection development, ensure `timeout_seconds >= 43200`.
 12. For full-selection executive runs, ensure `--early-stop-validation-score 1.0` is present.
 13. Run same-run baselines only after full-selection executive-only passes.
-14. Run locked test only when `work/skillopt_locked_preflight.py` reports `allowed`.
+14. Never run the consumed `coding-hidden-v2` locked test again.
 
 ## Baseline Preparation
 
@@ -198,18 +204,20 @@ Requirements:
 
 Only this stage can support final cost and success-rate comparisons. Cached baselines are not cost evidence.
 
-## Locked Test
+## Historical Locked-Test Procedure — Do Not Execute
 
-Locked test is a one-attempt final evaluation. Do not run it from targeted smoke or from a cached-baseline-only conclusion.
+The locked test was a one-attempt final evaluation and is already consumed.
+The material below is retained only to explain the archived gate and receipt.
 
-Before any locked test:
+The historical preflight command was:
 
 ```bash
 python3 work/skillopt_locked_preflight.py \
   --run-dir runs/<candidate-run-dir>
 ```
 
-Proceed only when the report status is `allowed`. A blocked report is the source of truth for missing evidence.
+At the time, an `allowed` status was required. It is not authorization to run
+the consumed split now.
 
 The locked preflight must pass all of these checks:
 
@@ -232,8 +240,8 @@ python3 work/skillopt_stage7.py check \
   --quiet
 ```
 
-Proceed only when this check reports `ready` with zero failures and a separate
-Phase B approval has been given. The single allowed execution command is:
+At the time, this check had to report `ready` with zero failures. The historical
+execution command was:
 
 ```bash
 python3 work/skillopt_stage7.py run \
@@ -295,7 +303,7 @@ Result: runner complete, smoke and contract-effect gates passed, executive mean
 `1.0` against same-run human-skill mean `0.8667`, mean delta `+0.1333`, seed
 wins `3/3`, and no accepted protected regression.
 
-Locked preflight is `allowed`. Stage 7 manifest preparation selects `seed-c`
-and the readiness check is `ready` with zero failures. Next: run Phase A only
-through `docs/ops/skillopt-stage7-operator-readme.md`; do not consume the locked
-test until its packet is reviewed and Phase B is explicitly approved.
+Historical final state: Stage 7 selected `seed-c`, Phase A passed, and Phase B
+consumed the locked test exactly once on 2026-07-13. The final result is complete
+at `20/20`; do not run Phase A or Phase B again. All new execution follows
+`docs/specs/skillopt-paper-faithful-roadmap.md`.

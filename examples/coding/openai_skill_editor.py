@@ -81,6 +81,9 @@ def main() -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if optimizer_payload.get("operation") == "capabilities":
+        print(json.dumps({"capabilities": ["full_skill_replacement"]}))
+        return 0
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         print("OPENAI_API_KEY is required", file=sys.stderr)

@@ -20,8 +20,9 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
 
 ## Local Paper Source
 
-- Paper PDF: `docs/papers/skillopt-2605.23904.pdf`
+- Paper PDF: `docs/papers/skillopt-2605.23904.pdf` (`2605.23904v2`)
 - Paper index: `docs/papers/README.md`
+- Paper and official-code identities: `docs/papers/source-lock.json`
 
 ## Implemented
 
@@ -316,7 +317,8 @@ Implemented locally on 2026-06-30:
 - `validation_confirmation_rounds=0` is allowed only for `mechanism_smoke` runner manifests. Scale-up manifests must use at least `validation_confirmation_rounds >= 1`.
 - Full benchmark claims require a full-selection executive-only run before any complete same-run baseline matrix.
 - Final cost claims require same-run baselines. Cached baselines are not cost evidence.
-- Locked test remains one-time and blocked until full-selection, proposal audit, contract effect audit, and hardened development gate all pass.
+- The locked test was one-time and is now consumed; historical gate conditions
+  do not authorize another execution.
 
 Recheck of the latest completed targeted rejection smoke (`runs/coding-hidden-v2-deepseek-targeted-rejection-smoke-v3`) under the new artifact-only audits:
 
@@ -385,16 +387,12 @@ Completed:
 
 Active next work:
 
-1. Use `docs/specs/skillopt-paper-faithful-roadmap.md` as the canonical plan.
-2. Preserve the Stage 5/7 run as immutable `contract-aware-extension-v1`
-   evidence and do not rerun its locked test.
-3. Establish a reproducible repository baseline commit and pin the paper and
-   official reference versions.
-4. Implement the paper profile, selection/test firewall, claim provenance, and
-   conformance tests before adding the new engine.
-5. Build the isolated paper patch core, then epoch buffer, gated slow update,
-   and optimizer-only meta skill.
-6. Run zero-cost conformance before any paid smoke or new benchmark campaign.
+1. Treat WP0/M0 as complete: the source lock pins the paper and Microsoft
+   SkillOpt `v0.2.0`, the default test/CI gate is reproducible, incompatible
+   executive editors fail fast, and historical operator docs are audit-only.
+2. Execute WP1/M1 next from `skillopt-paper-faithful-roadmap.md`; it is the
+   sole executable plan.
+3. Keep paid work blocked until WP4 zero-cost conformance passes.
 
 ## Practical Review Rule
 

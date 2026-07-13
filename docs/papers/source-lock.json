@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "locked_on": "2026-07-13",
+  "paper": {
+    "arxiv_id": "2605.23904v2",
+    "source_url": "https://arxiv.org/pdf/2605.23904v2",
+    "tracked_path": "docs/papers/skillopt-2605.23904.pdf",
+    "sha256": "87f7f0f323b1671e9202b3ebb1596e909e507c71ecd1b360b0075a5ee1727fe3"
+  },
+  "official_reference": {
+    "repository": "https://github.com/microsoft/SkillOpt.git",
+    "release": "v0.2.0",
+    "tag_object_sha": "51d0a4d96e88558c84dee637f98e24e3fb2d1547",
+    "commit_sha": "e4ea6a6771e797ef820cdd8bfea64c57e0481065",
+    "tree_sha": "5a603e937a20f1078059f94039a50028c022487a",
+    "license": "MIT",
+    "reused_files": []
+  },
+  "local_baseline": {
+    "tag": "contract-aware-extension-v1",
+    "commit_sha": "91c00b9c582e48b077c9282f4ccc80db26341653"
+  },
+  "known_upstream_deviations": [
+    {
+      "id": "slow-update-selection-gate",
+      "upstream_evidence": {
+        "path": "configs/_base_/default.yaml",
+        "setting": "optimizer.slow_update_gate_with_selection",
+        "value": false
+      },
+      "paper_resolution": "Paper mode must apply the strict selection gate to the slow-update candidate."
+    },
+    {
+      "id": "analyst-refinement-loop",
+      "upstream_evidence": {
+        "path": "skillopt/engine/trainer.py",
+        "observation": "max_analyst_rounds is loaded and logged but is not used to execute refinement rounds"
+      },
+      "paper_resolution": "Paper mode must execute real semantic teacher refinement, capped at three rounds."
+    }
+  ],
+  "reuse_policy": "Before copying any official source or prompt, append its repository-relative path and SHA256 to official_reference.reused_files. Upstream main is never a valid reference."
+}
