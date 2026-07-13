@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textskill-optimizer.local/schemas/paper-profile-v1.schema.json",
+  "title": "SkillOpt paper-faithful-v1 profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profile",
+    "protocol_id",
+    "epochs",
+    "split_seed",
+    "default_split_ratio",
+    "rollout_batch_size",
+    "accumulation",
+    "reflection_minibatch_size",
+    "merge_batch_size",
+    "analyst_workers",
+    "max_analyst_rounds",
+    "update_mode",
+    "learning_rate",
+    "learning_rate_floor",
+    "learning_rate_schedule",
+    "selection_gate",
+    "rejected_buffer",
+    "slow_update",
+    "meta_skill",
+    "early_stop"
+  ],
+  "properties": {
+    "$schema": {"type": "string"},
+    "profile": {"type": "string", "enum": ["paper-faithful-v1"]},
+    "protocol_id": {"type": "string", "enum": ["paper-faithful-v1"]},
+    "epochs": {"type": "integer", "minimum": 1},
+    "split_seed": {"type": "integer"},
+    "default_split_ratio": {"type": "string", "enum": ["2:1:7"]},
+    "rollout_batch_size": {"type": "integer", "minimum": 1},
+    "accumulation": {"type": "integer", "minimum": 1},
+    "reflection_minibatch_size": {"type": "integer", "minimum": 1},
+    "merge_batch_size": {"type": "integer", "minimum": 1},
+    "analyst_workers": {"type": "integer", "minimum": 1},
+    "max_analyst_rounds": {"type": "integer", "minimum": 1, "maximum": 3},
+    "update_mode": {"type": "string", "enum": ["patch", "rewrite_from_suggestions"]},
+    "learning_rate": {"type": "integer", "minimum": 1},
+    "learning_rate_floor": {"type": "integer", "minimum": 1},
+    "learning_rate_schedule": {"type": "string", "enum": ["cosine", "constant", "linear", "autonomous"]},
+    "selection_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "metric", "comparator"],
+      "properties": {
+        "enabled": {"type": "boolean", "enum": [true]},
+        "metric": {"type": "string", "enum": ["benchmark_native"]},
+        "comparator": {"type": "string", "enum": ["strict_greater"]}
+      }
+    },
+    "rejected_buffer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "scope"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "scope": {"type": "string", "enum": ["epoch"]}
+      }
+    },
+    "slow_update": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "start_epoch", "sample_size", "selection_gated"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "start_epoch": {"type": "integer", "minimum": 2},
+        "sample_size": {"type": "integer", "minimum": 1},
+        "selection_gated": {"type": "boolean", "enum": [true]}
+      }
+    },
+    "meta_skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "start_epoch", "initial", "target_visible"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "start_epoch": {"type": "integer", "minimum": 2},
+        "initial": {"type": "string", "enum": ["empty"]},
+        "target_visible": {"type": "boolean", "enum": [false]}
+      }
+    },
+    "early_stop": {"type": "boolean", "enum": [false]}
+  }
+}

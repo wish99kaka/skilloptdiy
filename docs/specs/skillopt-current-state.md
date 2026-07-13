@@ -26,6 +26,16 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
 
 ## Implemented
 
+- M1 paper contract under `textskill_optimizer.paper`: a packaged
+  `paper-faithful-v1` JSON profile and schema, fail-closed extension-field
+  and unregistered-override rejection, artifact/evidence claim taxonomies,
+  hash-bound lineage schema, consumed-split registry,
+  Algorithm 1 event schema, independent edit/state types, and one injected
+  `OptimizerBackend` interface.
+- Zero-call conformance classification through `assess_paper_profile(...)` and
+  `assess_paper_run(...)`, with tests for extension controls, protocol/claim
+  mismatch, consumed split reuse, scalar-only selection payloads, strict tie
+  rejection, test access, immutable receipts, and the static import firewall.
 - External editor path through `examples/coding/openai_compatible_skill_editor.py`.
 - Executive optimizer with bounded atomic edits, learning-rate schedule, rejected buffer, validation gate, slow update, meta skill, checkpoint, and early stop.
 - `coding-hidden-v2` builder/validator with contract tags and contract macro accuracy.
@@ -107,13 +117,15 @@ evidence, not as a paper-faithful or held-out baseline-superiority claim.
 
 ## Main Gap Versus Paper
 
-The contract-aware same-target loop and its one locked attempt are complete,
-but the paper-faithful implementation and evidence campaign have not begun.
+The contract-aware same-target loop and its one locked attempt are complete.
+The paper contract is now enforced, but the paper engine and evidence campaign
+have not begun.
 
 Highest-impact remaining gaps:
 
 1. The current executive algorithm is not paper-faithful: selection contract diagnostics and benchmark-specific mechanisms feed optimization, merge/ranking semantics differ, buffer and slow/meta lifecycles differ, and the paper-default run was not exercised.
-2. A separate `paper-faithful-v1` engine, profile, conformance suite, and claim-provenance layer are missing.
+2. The separate profile, provenance contract, and foundational conformance
+   suite exist; the runtime data firewall and paper engine are still missing.
 3. The consumed `coding-hidden-v2` split cannot support a future paper-faithful held-out claim; a fresh split or official benchmark is required.
 4. The local matrix lacks several paper baselines, ablations, benchmark/model/harness breadth, and target-agent token accounting.
 
@@ -390,8 +402,9 @@ Active next work:
 1. Treat WP0/M0 as complete: the source lock pins the paper and Microsoft
    SkillOpt `v0.2.0`, the default test/CI gate is reproducible, incompatible
    executive editors fail fast, and historical operator docs are audit-only.
-2. Execute WP1/M1 next from `skillopt-paper-faithful-roadmap.md`; it is the
-   sole executable plan.
+2. Treat WP1/M1 as complete. Execute M2 runtime data-firewall wiring next as
+   the first vertical slice toward WP2; do not start optimizer semantics before
+   selection/test isolation is executable end to end.
 3. Keep paid work blocked until WP4 zero-cost conformance passes.
 
 ## Practical Review Rule

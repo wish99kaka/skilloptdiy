@@ -1,0 +1,141 @@
+"""Paper-only event and state types; no extension optimizer types are reused."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from enum import Enum
+from importlib.resources import files
+from typing import Any, Mapping
+
+from .data import SelectionScore
+from .schema_validation import validate_schema
+
+
+class AlgorithmEventType(str, Enum):
+    RUN_STARTED = "run_started"
+    EPOCH_STARTED = "epoch_started"
+    STEP_STARTED = "step_started"
+    ROLLOUT_COLLECTED = "rollout_collected"
+    FAILURE_REFLECTED = "failure_reflected"
+    SUCCESS_REFLECTED = "success_reflected"
+    ANALYST_REFINED = "analyst_refined"
+    MERGE_FAILURE = "merge_failure"
+    MERGE_SUCCESS = "merge_success"
+    MERGE_FINAL_FAILURE_PRIORITIZED = "merge_final_failure_prioritized"
+    RANK_TOP_L = "rank_top_l"
+    PATCH_APPLIED = "patch_applied"
+    SELECTION_SCORED = "selection_scored"
+    CANDIDATE_ACCEPTED = "candidate_accepted"
+    CANDIDATE_REJECTED = "candidate_rejected"
+    SLOW_UPDATE_SKIPPED = "slow_update_skipped"
+    SLOW_UPDATE_PROPOSED = "slow_update_proposed"
+    META_UPDATE_SKIPPED = "meta_update_skipped"
+    META_UPDATE_COMPLETED = "meta_update_completed"
+    EPOCH_COMPLETED = "epoch_completed"
+    RUN_COMPLETED = "run_completed"
+
+
+class PaperEditOperation(str, Enum):
+    APPEND = "append"
+    INSERT_AFTER = "insert_after"
+    REPLACE = "replace"
+    DELETE = "delete"
+
+
+@dataclass(frozen=True)
+class PaperEdit:
+    edit_id: str
+    operation: PaperEditOperation
+    target: str = ""
+    content: str = ""
+    rationale: str = ""
+    support_count: int = 1
+
+    def __post_init__(self) -> None:
+        if not self.edit_id.strip():
+            raise ValueError("paper edit requires an edit_id")
+        if self.operation in {
+            PaperEditOperation.INSERT_AFTER,
+            PaperEditOperation.REPLACE,
+            PaperEditOperation.DELETE,
+        } and not self.target:
+            raise ValueError(f"{self.operation.value} requires a target")
+        if self.operation in {
+            PaperEditOperation.APPEND,
+            PaperEditOperation.INSERT_AFTER,
+            PaperEditOperation.REPLACE,
+        } and not self.content.strip():
+            raise ValueError(f"{self.operation.value} requires content")
+        if self.operation is PaperEditOperation.DELETE and self.content:
+            raise ValueError("delete cannot carry replacement content")
+        if self.support_count < 1:
+            raise ValueError("paper edit support_count must be >= 1")
+
+
+@dataclass(frozen=True)
+class PaperState:
+    """Persisted paper state with explicit current, best, and optimizer-only text."""
+
+    epoch: int
+    step: int
+    current_skill: str
+    current_score: SelectionScore
+    best_skill: str
+    best_score: SelectionScore
+    meta_skill: str = ""
+
+    def __post_init__(self) -> None:
+        if self.epoch < 0 or self.step < 0:
+            raise ValueError("paper state epoch and step must be non-negative")
+        if not self.current_skill.strip() or not self.best_skill.strip():
+            raise ValueError("paper state requires current and best skills")
+        if self.best_score.value < self.current_score.value:
+            raise ValueError("best score cannot be below current score")
+
+
+@dataclass(frozen=True)
+class AlgorithmEvent:
+    sequence: int
+    event_type: AlgorithmEventType
+    epoch: int | None
+    step: int | None
+    payload: Mapping[str, Any] = field(default_factory=dict)
+    schema_version: str = "algorithm-event-v1"
+
+    def __post_init__(self) -> None:
+        if self.sequence < 0:
+            raise ValueError("event sequence must be non-negative")
+        if self.epoch is not None and self.epoch < 1:
+            raise ValueError("event epoch must be >= 1")
+        if self.step is not None and self.step < 1:
+            raise ValueError("event step must be >= 1")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "sequence": self.sequence,
+            "event_type": self.event_type.value,
+            "epoch": self.epoch,
+            "step": self.step,
+            "payload": dict(self.payload),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "AlgorithmEvent":
+        schema_path = files("textskill_optimizer.paper").joinpath(
+            "schemas", "algorithm-event-v1.schema.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        violations = validate_schema(payload, schema)
+        if violations:
+            details = "; ".join(f"{item.path}: {item.message}" for item in violations)
+            raise ValueError(f"invalid Algorithm 1 event: {details}")
+        return cls(
+            schema_version=payload["schema_version"],
+            sequence=payload["sequence"],
+            event_type=AlgorithmEventType(payload["event_type"]),
+            epoch=payload["epoch"],
+            step=payload["step"],
+            payload=payload["payload"],
+        )

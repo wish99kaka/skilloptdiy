@@ -29,8 +29,9 @@ No validation improvement, no skill update.
   guards. It requires an editor with the `atomic_edits` capability; the built-in
   full-replacement editors fail before evaluation instead of producing a no-op
   executive run.
-- The isolated `paper-faithful-v1` protocol is the active implementation
-  target; it is specified but not yet exposed by the CLI.
+- The isolated `paper-faithful-v1` contract is implemented under
+  `textskill_optimizer.paper`; its optimization engine is not yet exposed by
+  the CLI.
 
 See `docs/skillopt-executive-protocol.md` only for the historical executive
 JSON contract and `coding-hidden-v2` workflow. Its locked test has already been
@@ -48,6 +49,14 @@ The one-attempt `coding-hidden-v2` locked test was consumed on 2026-07-13. Its
 20/20 result is frozen as historical `contract-aware-extension-v1` evidence and
 must not be rerun or relabeled as paper-faithful. A future paper-faithful
 held-out claim requires a new untouched split or an official paper benchmark.
+
+M1 freezes the paper contract before the engine exists. The bundled JSON
+profile rejects both extension controls and unregistered deviations, claim
+lineage is hash-bound and validated against a versioned schema, and the
+consumed-split registry blocks relabeling old evidence. The public
+`assess_paper_profile(...)` and
+`assess_paper_run(...)` functions perform these checks without constructing a
+model backend. Runtime selection/test isolation is the next milestone.
 
 Read `docs/specs/skillopt-paper-faithful-roadmap.md` first. It defines source
 precedence, protocol isolation, the official-code reuse boundary, conformance

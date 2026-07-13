@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://textskill-optimizer.local/schemas/algorithm-event-v1.schema.json",
+  "title": "SkillOpt Algorithm 1 event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sequence", "event_type", "epoch", "step", "payload"],
+  "properties": {
+    "schema_version": {"type": "string", "enum": ["algorithm-event-v1"]},
+    "sequence": {"type": "integer", "minimum": 0},
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "run_started",
+        "epoch_started",
+        "step_started",
+        "rollout_collected",
+        "failure_reflected",
+        "success_reflected",
+        "analyst_refined",
+        "merge_failure",
+        "merge_success",
+        "merge_final_failure_prioritized",
+        "rank_top_l",
+        "patch_applied",
+        "selection_scored",
+        "candidate_accepted",
+        "candidate_rejected",
+        "slow_update_skipped",
+        "slow_update_proposed",
+        "meta_update_skipped",
+        "meta_update_completed",
+        "epoch_completed",
+        "run_completed"
+      ]
+    },
+    "epoch": {"type": ["integer", "null"], "minimum": 1},
+    "step": {"type": ["integer", "null"], "minimum": 1},
+    "payload": {"type": "object"}
+  }
+}

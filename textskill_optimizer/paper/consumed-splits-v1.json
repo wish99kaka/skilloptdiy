@@ -1,0 +1,16 @@
+{
+  "schema_version": "consumed-splits-v1",
+  "entries": [
+    {
+      "split_id": "coding-hidden-v2",
+      "protocol_id": "contract-aware-extension-v1",
+      "consumed_at": "2026-07-13T08:55:34.471469+00:00",
+      "attempt": 1,
+      "attempt_path": "runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_attempt.json",
+      "attempt_sha256": "32de90b74555b52d6c96f20856854b26e85c2c6de5f995c43176eec7254e855d",
+      "receipt_path": "runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_receipt.json",
+      "receipt_sha256": "a9c048db46cd0d91a863b01bc17c6a8dd8914c2cf840e7c80cf9a5d2905ff60b",
+      "archive_sha256": "d96afab4e903943c55773939d0def139be4f839cd008dffdb41b5db6fe967aad"
+    }
+  ]
+}

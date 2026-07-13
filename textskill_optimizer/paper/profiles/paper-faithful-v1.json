@@ -1,0 +1,40 @@
+{
+  "$schema": "../schemas/paper-profile-v1.schema.json",
+  "profile": "paper-faithful-v1",
+  "protocol_id": "paper-faithful-v1",
+  "epochs": 4,
+  "split_seed": 42,
+  "default_split_ratio": "2:1:7",
+  "rollout_batch_size": 40,
+  "accumulation": 1,
+  "reflection_minibatch_size": 8,
+  "merge_batch_size": 8,
+  "analyst_workers": 16,
+  "max_analyst_rounds": 3,
+  "update_mode": "patch",
+  "learning_rate": 4,
+  "learning_rate_floor": 2,
+  "learning_rate_schedule": "cosine",
+  "selection_gate": {
+    "enabled": true,
+    "metric": "benchmark_native",
+    "comparator": "strict_greater"
+  },
+  "rejected_buffer": {
+    "enabled": true,
+    "scope": "epoch"
+  },
+  "slow_update": {
+    "enabled": true,
+    "start_epoch": 2,
+    "sample_size": 20,
+    "selection_gated": true
+  },
+  "meta_skill": {
+    "enabled": true,
+    "start_epoch": 2,
+    "initial": "empty",
+    "target_visible": false
+  },
+  "early_stop": false
+}

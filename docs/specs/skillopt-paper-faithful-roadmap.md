@@ -21,15 +21,16 @@ Build and evaluate an implementation that is faithful to the SkillOpt paper.
 The paper is the specification; the Microsoft implementation is a source of
 reusable code and a reference for ambiguities, not the acceptance standard.
 
-The work has four claim levels:
+The work has four program-level evidence levels. These are conclusions over
+result bundles, not the per-artifact `claim_class` taxonomy in Section 12:
 
-1. `paper-mechanism-conformant`: the implementation follows Algorithm 1 and
+1. `paper_mechanism_conformant`: the implementation follows Algorithm 1 and
    the Appendix contracts.
-2. `fresh-local-efficacy`: the conformant implementation beats eligible
+2. `fresh_local_efficacy`: the conformant implementation beats eligible
    baselines on a new untouched local held-out set.
-3. `partial-paper-reproduction`: at least one paper benchmark is run with the
+3. `partial_paper_reproduction`: at least one paper benchmark is run with the
    published split, scorer, configuration, target, and applicable baselines.
-4. `paper-scope-replication`: the benchmark, model, harness, baseline,
+4. `paper_scope_replication`: the benchmark, model, harness, baseline,
    ablation, and transfer breadth approaches the paper's full evidence scope.
 
 Do not use a higher claim label until every lower-level provenance and evidence
@@ -246,6 +247,7 @@ the buffer without adding selection diagnostics.
 
 ```yaml
 profile: paper-faithful-v1
+protocol_id: paper-faithful-v1
 epochs: 4
 split_seed: 42
 default_split_ratio: 2:1:7
@@ -266,8 +268,6 @@ selection_gate:
   enabled: true
   metric: benchmark_native
   comparator: strict_greater
-  confirmation_rounds: 0
-  contract_guard: false
 
 rejected_buffer:
   enabled: true
@@ -286,12 +286,18 @@ meta_skill:
   target_visible: false
 
 early_stop: false
-selection_feedback_to_optimizer: false
-benchmark_specific_prompt_rules: false
 ```
 
-Benchmark-specific overrides may change only fields explicitly justified by
-the paper and must be recorded in the run manifest.
+Paired/confirmation gating, contract guards, soft or mixed gates, force-accept,
+selection feedback, and benchmark-specific prompt controls are not disabled
+paper fields. They are absent from the schema, and their presence makes a
+profile non-conformant.
+
+`paper-faithful-v1` is frozen to the values above. M1's allowed override
+registry is empty: a deviation is rejected as `unregistered_profile_override`.
+A future benchmark-specific override becomes valid only after its exact field,
+value rule, and paper citation are added to the versioned contract and tests;
+free-form run-manifest justification is not authority by itself.
 
 ## 9. Execution Roadmap
 
@@ -303,8 +309,8 @@ in Section 13 are the only executable plan; this table is only a status index.
 | Phase | Status | Work package |
 | --- | --- | --- |
 | 0. Freeze and provenance | Completed | WP0 |
-| 1. Spec and profile | Next | WP1 |
-| 2. Data firewall | Pending | WP1 |
+| 1. Spec and profile | Completed | WP1 |
+| 2. Data firewall | Contract/tests complete; runtime pending | M2 / WP2 |
 | 3. Patch fast core | Pending | WP2 |
 | 4. Epoch state | Pending | WP3 |
 | 5. Slow/meta | Pending | WP3 |
@@ -408,7 +414,7 @@ first and append baselines later.
 
 Every result bundle records:
 
-- claim class and `protocol_id`
+- artifact claim class, optional program evidence level, and `protocol_id`
 - paper version and official reference commit
 - local code commit and upstream-deviation manifest
 - profile, prompt, and skill hashes
@@ -428,6 +434,18 @@ paper_faithful_development
 paper_faithful_heldout
 paper_scale_reproduction
 ```
+
+The two taxonomy axes map as follows:
+
+| Artifact `claim_class` | Allowed non-null `evidence_level` |
+| --- | --- |
+| `mechanism_test` | `paper_mechanism_conformant` |
+| `development_result`, `contract_aware_extension`, `paper_faithful_development` | none |
+| `paper_faithful_heldout` | `fresh_local_efficacy` |
+| `paper_scale_reproduction` | `partial_paper_reproduction`, `paper_scope_replication` |
+
+An evidence level remains null until its measured gate passes; lineage naming
+alone never upgrades evidence.
 
 A profile other than `paper-faithful-v1` cannot create a
 `paper_faithful_*` claim. A split already consumed by another protocol cannot
@@ -450,8 +468,9 @@ The project-wide review on 2026-07-13 established these pre-M0 facts:
   `executive` protocol could exit successfully without optimizing when given a
   built-in full-skill editor. M0 resolved this with an explicit editor
   capability check and non-atomic response failure.
-- `paper-faithful-v1` is specified but has no package, CLI protocol, or
-  conformance suite. It is not releasable or claim-eligible.
+- `paper-faithful-v1` was specified but had no package, CLI protocol, or
+  conformance suite. M1 resolved the contract/package gap; the engine and CLI
+  protocol remain intentionally unavailable until later gates pass.
 - Stage 7 is consumed historical `contract-aware-extension-v1` evidence. Its
   `20/20` result cannot be relabeled or reused for a paper-faithful held-out
   claim.
@@ -492,7 +511,7 @@ Exit gate:
 
 #### WP1 — Define the paper contract before implementation
 
-Dependencies: WP0.
+Status: completed on 2026-07-13. Dependencies: WP0.
 
 1. Add the machine-readable `paper-faithful-v1` profile and reject all forbidden
    extension overrides.
@@ -505,6 +524,16 @@ Dependencies: WP0.
 
 Exit gate: a fake run can be classified and rejected for protocol or provenance
 violations without invoking a model or reading engine internals.
+
+Completion evidence:
+
+- `textskill_optimizer.paper` exposes the validated profile, run assessment,
+  claim/lineage contracts, consumed registry, Algorithm 1 events, independent
+  edit/state types, and injected backend seam.
+- `tests/conformance` and `tests/provenance` cover forbidden extension fields,
+  scalar-only selection, strict ties, test access, consumed splits, receipt
+  immutability, and static imports.
+- No paper optimizer engine or paid/model-backed experiment was introduced.
 
 #### WP2 — Implement the paper fast loop
 
@@ -603,8 +632,9 @@ This is a claim-level summary, not a second execution plan.
 
 - **M0 — Baseline closed:** WP0 passes and provenance plus engineering gates are
   reproducible.
-- **M1 — Paper contract enforced:** WP1 passes; extension semantics and
-  selection/test data cannot enter paper optimization.
+- **M1 — Paper contract enforced:** WP1 passes; extension controls cannot enter
+  the profile, and selection/test interfaces are fail-closed before engine
+  wiring.
 - **M2 — Paper mechanisms conformant:** WP2–WP4 pass; the complete supported
   mechanism set has zero-cost conformance evidence.
 - **M3 — Development evidence:** the three-seed paper-faithful development

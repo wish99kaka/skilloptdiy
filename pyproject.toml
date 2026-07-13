@@ -38,5 +38,8 @@ textskill = "textskill_optimizer.cli:main"
 [tool.setuptools.packages.find]
 include = ["textskill_optimizer*"]
 
+[tool.setuptools.package-data]
+"textskill_optimizer.paper" = ["*.json", "profiles/*.json", "schemas/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
