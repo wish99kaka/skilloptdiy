@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "textskill-optimizer"
+version = "0.1.0"
+description = "A minimal text-space optimizer for reusable agent skill documents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "TextSkill Optimizer Contributors" }
+]
+keywords = ["agents", "llm", "skills", "optimization", "prompt-engineering"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "cryptography>=42",
+]
+
+[project.scripts]
+textskill = "textskill_optimizer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["textskill_optimizer*"]

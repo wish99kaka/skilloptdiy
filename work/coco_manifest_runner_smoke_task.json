@@ -1,0 +1,33 @@
+{
+  "allowed_command": [
+    "python3",
+    "work/experiment_runner.py",
+    "run",
+    "--manifest",
+    "work/experiment_runner_manifest.smoke.json"
+  ],
+  "completion_output_schema": {
+    "note": "<one short sentence>",
+    "runner_execution": "<path or missing>",
+    "runner_report": "<path or missing>",
+    "status": "<complete|failed|blocked>",
+    "stderr": "<path or missing>",
+    "stdout": "<path or missing>"
+  },
+  "forbidden_actions": [
+    "do_not_decide_locked_test",
+    "do_not_interpret_benchmark_result",
+    "do_not_modify_manifest",
+    "do_not_modify_source_or_skill_or_tests",
+    "do_not_change_task_limit",
+    "do_not_override_target_or_coco_model",
+    "do_not_open_raw_result_json_unless_runner_report_missing"
+  ],
+  "manifest": "work/experiment_runner_manifest.smoke.json",
+  "preconditions": [
+    "EXTERNAL_LLM_API_KEY exists in environment",
+    "API key is never printed, requested, saved, or transformed"
+  ],
+  "role": "mechanical_execution_only",
+  "workspace": "/Users/bytedance/Documents/Codex/2026-06-08/skillopt"
+}

@@ -1,0 +1,41 @@
+{
+  "packet_id": "",
+  "stage": "",
+  "manifest": "",
+  "run_dir": "",
+  "created_at": "",
+  "approved_to_run": false,
+  "accounting_scope": {
+    "cost_scope": "optimizer_api_usage_only",
+    "target_agent_usage_scope": "out_of_scope",
+    "cost_claim_limit": "do_not_claim_paper_equivalent_target_agent_cost"
+  },
+  "manifest_checks": {
+    "stage_full_selection_development": false,
+    "stage_same_run_baseline_matrix": false,
+    "mechanical_runner_role": false,
+    "timeout_seconds_at_least_43200": false,
+    "timeout_seconds_at_least_86400": false,
+    "early_stop_validation_score_1": false,
+    "coco_target_model_not_overridden": false,
+    "conditions_executive_only": false,
+    "conditions_include_no_skill_human_skill_one_shot_executive": false,
+    "confirmation_rounds_at_least_1": false,
+    "baseline_summary_present": false,
+    "baseline_summary_absent": false,
+    "baseline_summary_full_development_not_targeted": false,
+    "no_train_task_ids": false,
+    "no_selection_task_ids": false,
+    "no_task_contracts": false,
+    "no_task_limit": false,
+    "fresh_run_dir_or_report_regen_plan": false,
+    "rows_same_seed_task_model_scorer_confirmation_retry_environment": false
+  },
+  "preflight": {
+    "command": "",
+    "status": "",
+    "reason": ""
+  },
+  "proposed_execution_command": "",
+  "operator_notes": ""
+}

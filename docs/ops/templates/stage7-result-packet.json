@@ -1,0 +1,33 @@
+{
+  "packet_id": "stage7-locked-test-once-v1",
+  "manifest": "work/skillopt_locked_manifest.stage7_v1.json",
+  "source_run_dir": "runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop",
+  "created_at": "",
+  "attempts": 1,
+  "attempt_marker_present": false,
+  "command_returncode": null,
+  "receipt_present": false,
+  "receipt_archive_sha256": "",
+  "final_status": "",
+  "selected_seed": "",
+  "selected_skill_sha256": "",
+  "locked_task_count": null,
+  "locked_task_accuracy": null,
+  "locked_family_macro_accuracy": null,
+  "locked_contract_macro_accuracy": null,
+  "same_run_development": {
+    "executive_mean": 1.0,
+    "best_baseline_condition": "human_skill",
+    "best_baseline_mean": 0.8666666666666667,
+    "mean_delta": 0.1333333333333333,
+    "seed_wins": "3/3"
+  },
+  "usage_scope": {
+    "optimizer_api_total_tokens": 431247,
+    "executive_optimizer_tokens": 422280,
+    "one_shot_optimizer_tokens": 8967,
+    "target_agent_tokens": "out_of_scope"
+  },
+  "remaining_limitations": [],
+  "operator_notes": ""
+}

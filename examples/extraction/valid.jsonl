@@ -1,0 +1,3 @@
+{"id":"valid-1","input":"Name: Alan Turing; E-mail: alan@example.com; Company: Bletchley Park","expected":{"name":"Alan Turing","email":"alan@example.com","company":"Bletchley Park"}}
+{"id":"valid-2","input":"Full name: Katherine Johnson; Email: kj@example.com; Org: NASA","expected":{"name":"Katherine Johnson","email":"kj@example.com","company":"NASA"}}
+

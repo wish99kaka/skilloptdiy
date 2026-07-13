@@ -1,0 +1,60 @@
+{
+  "acceptance": {
+    "best_baseline_margin": 0.05,
+    "min_seed_wins": 2
+  },
+  "command": [
+    "python3",
+    "work/run_coding_hidden_v2_matrix.py",
+    "--out",
+    "runs/coding-hidden-v2-deepseek-runner-smoke-v1",
+    "--seeds",
+    "runner-smoke-a,runner-smoke-b,runner-smoke-c",
+    "--seed-workers",
+    "3",
+    "--epochs",
+    "1",
+    "--rollout-batch-size",
+    "10",
+    "--reflection-minibatch-size",
+    "5",
+    "--learning-rate",
+    "2",
+    "--learning-rate-floor",
+    "2",
+    "--learning-rate-schedule",
+    "constant",
+    "--slow-update-sample-size",
+    "1",
+    "--task-timeout",
+    "360",
+    "--task-retries",
+    "1",
+    "--retry-backoff-seconds",
+    "5",
+    "--early-stop-rejection-limit",
+    "1",
+    "--editor-timeout",
+    "300",
+    "--task-limit",
+    "1",
+    "--resume"
+  ],
+  "env": {
+    "EXTERNAL_LLM_BASE_URL": "https://ark-cn-beijing.bytedance.net/api/v3",
+    "EXTERNAL_LLM_MODEL": "ep-20260507113406-9h6cz",
+    "EXTERNAL_LLM_TIMEOUT": "300"
+  },
+  "env_passthrough": [
+    "EXTERNAL_LLM_API_KEY"
+  ],
+  "experiment_type": "coding_hidden_v2_matrix",
+  "immutable_controls": {
+    "do_not_change_coco_model": true,
+    "target_model_policy": "read-local-default-without-override"
+  },
+  "out_dir": "runs/coding-hidden-v2-deepseek-runner-smoke-v1",
+  "runner_role": "mechanical_execution_only",
+  "schema_version": 1,
+  "timeout_seconds": 7200
+}

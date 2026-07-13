@@ -1,0 +1,44 @@
+{
+  "packet_id": "",
+  "run_dir": "",
+  "manifest": "",
+  "command": "",
+  "created_at": "",
+  "decision": {
+    "status": "",
+    "reason": "",
+    "scale_up_allowed": false
+  },
+  "runner": {
+    "status": "",
+    "locked_test_recommended": false,
+    "persistent_anomaly_count": 0
+  },
+  "gates": {
+    "smoke_status": "",
+    "smoke_reason": "",
+    "contract_effect_status": "",
+    "contract_effect_reason": "",
+    "development_gate_passed": false
+  },
+  "scores": {
+    "executive_mean": null,
+    "mean_delta": null,
+    "seed_wins": "",
+    "condition_means": {},
+    "best_baseline_condition": "",
+    "rows_comparable": false,
+    "missing_paper_baselines": [],
+    "protected_regression_count": null,
+    "rejected_protected_regression_count": null,
+    "effective_step_count": null
+  },
+  "usage": {
+    "optimizer_tokens": null,
+    "cost_scope": "optimizer_api_usage_only",
+    "target_agent_usage_scope": "out_of_scope"
+  },
+  "compact_status": "",
+  "failure_delta_excerpt": "",
+  "operator_notes": ""
+}

@@ -1,0 +1,10 @@
+{
+  "id": "sample-add-one",
+  "input": "Fix the failing tests without editing tests.",
+  "expected": {
+    "tests_passed": true
+  },
+  "metadata": {
+    "test_command": "python3 -m unittest discover -s tests"
+  }
+}

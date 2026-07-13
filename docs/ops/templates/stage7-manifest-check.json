@@ -1,0 +1,47 @@
+{
+  "packet_id": "stage7-locked-test-once-v1",
+  "stage": "locked_test_once",
+  "manifest": "work/skillopt_locked_manifest.stage7_v1.json",
+  "source_run_dir": "runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop",
+  "created_at": "",
+  "approved_to_run": false,
+  "readiness": {
+    "status": "",
+    "failed_check_count": 0,
+    "failed_checks": []
+  },
+  "pinned_values": {
+    "selected_seed": "seed-c",
+    "selected_skill_sha256": "93f6b57434c532626addf070f992faeede4ed9cd5982248c8eb632b5b559b290",
+    "selected_skill_bytes": 592,
+    "archive_sha256": "d96afab4e903943c55773939d0def139be4f839cd008dffdb41b5db6fe967aad",
+    "expected_task_count": 20
+  },
+  "checks": {
+    "locked_preflight_allowed": false,
+    "selected_candidate_unchanged": false,
+    "archive_unchanged": false,
+    "lock_matches_archive": false,
+    "lock_metadata_complete": false,
+    "stage5_archive_commitment": false,
+    "environment_policy_unchanged": false,
+    "python_runtime_unchanged": false,
+    "execution_policy_unchanged": false,
+    "code_commitments_unchanged": false,
+    "development_evidence_unchanged": false,
+    "usage_scope_unchanged": false,
+    "key_file_present": false,
+    "key_file_unchanged": false,
+    "locked_attempt_absent": false,
+    "locked_receipt_absent": false,
+    "locked_result_absent": false,
+    "final_report_absent": false,
+    "usage_ledger_absent": false,
+    "usage_ledger_path_fixed": false,
+    "expected_task_count_20": false,
+    "command_unchanged": false,
+    "locked_evaluator_present": false
+  },
+  "proposed_execution_command": "python3 work/skillopt_stage7.py run --manifest work/skillopt_locked_manifest.stage7_v1.json --confirmation CONSUME_LOCKED_TEST_ONCE",
+  "operator_notes": ""
+}

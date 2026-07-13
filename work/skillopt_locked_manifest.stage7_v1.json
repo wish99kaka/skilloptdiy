@@ -1,0 +1,129 @@
+{
+  "code_commitments": {
+    "examples/coding/coco_agent_wrapper.py": "bd816e21590f018843aad9bb67abc07ee41e412cfe953ce976a9bd4f0c56fb57",
+    "textskill_optimizer/executive_optimizer.py": "1b51e3ab5fa6477d3e14a28d9d6b7eb013c97e16a7c38e6235274a355b78b137",
+    "textskill_optimizer/locked_eval.py": "c77e6e469e73367f86c1df30bfc716cb267a48019a5b965ab52e5f492315945c",
+    "textskill_optimizer/plugins/coding.py": "19131059704f2c8d4102f776397a853011c3412c234ac6441241dc13314010c7",
+    "work/run_coco_hidden_eval.py": "0c8ccf2feb34acc87eceae1a99bfafa03b0ce14b525b4e6bd6eae599c8bf5854",
+    "work/run_coding_hidden_v2_locked_eval.py": "1da1abd3747e2640261a5bafeb0d4595e3b43f2d035885d272d9f447dbb94688",
+    "work/run_coding_hidden_v2_matrix.py": "e71930a3d5bcb12350d655a5577c9d20fb2ab0f7b0aea5bd1a777188534bd912",
+    "work/skillopt_stage7.py": "fca141160a0f697cee8eddc33987f5d62cefec89f832f395eb8068c228a2acbc"
+  },
+  "command": [
+    "/opt/homebrew/Cellar/python@3.10/3.10.20/Frameworks/Python.framework/Versions/3.10/bin/python3.10",
+    "-m",
+    "textskill_optimizer.locked_eval",
+    "run",
+    "--archive",
+    "/Users/bytedance/CodeA/skilloptdiy/examples/coding-hidden-v2/test.enc",
+    "--key-file",
+    "/Users/bytedance/Documents/Codex/.skillopt-secrets/coding-hidden-v2-test.key",
+    "--lock",
+    "/Users/bytedance/CodeA/skilloptdiy/examples/coding-hidden-v2/test.lock.json",
+    "--receipt",
+    "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_receipt.json",
+    "--cwd",
+    "/Users/bytedance/CodeA/skilloptdiy",
+    "--",
+    "/opt/homebrew/Cellar/python@3.10/3.10.20/Frameworks/Python.framework/Versions/3.10/bin/python3.10",
+    "work/run_coding_hidden_v2_locked_eval.py",
+    "--skill",
+    "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/seed-c/executive/best_skill.md",
+    "--out",
+    "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_evaluation.json",
+    "--task-timeout",
+    "360",
+    "--task-retries",
+    "1",
+    "--retry-backoff-seconds",
+    "5.0"
+  ],
+  "development_evidence": {
+    "condition_means": {
+      "executive": 1.0,
+      "human_skill": 0.8666666666666667,
+      "no_skill": 0.8333333333333334,
+      "one_shot": 0.8666666666666667
+    },
+    "development_gate": {
+      "best_baseline_condition": "human_skill",
+      "best_baseline_mean": 0.8666666666666667,
+      "executive_mean": 1.0,
+      "mean_delta": 0.1333333333333333,
+      "passed": true,
+      "seed_wins": 3
+    },
+    "optimizer_api_tokens": {
+      "executive": 422280,
+      "one_shot": 8967,
+      "total": 431247
+    }
+  },
+  "environment_policy": {
+    "set": {
+      "COCO_AGENT_TIMEOUT": "360"
+    },
+    "unset": [
+      "COCO_AGENT_BIN",
+      "COCO_AGENT_DRY_RUN",
+      "COCO_AGENT_EXTRA_ARGS",
+      "COCO_AGENT_QUERY_TIMEOUT",
+      "COCO_AGENT_BASH_TIMEOUT",
+      "COCO_AGENT_YOLO",
+      "COCO_TASK_LIMIT",
+      "CROSS_AGENT_TASKS",
+      "PYTHONHOME",
+      "PYTHONPATH"
+    ]
+  },
+  "execution_policy": {
+    "attempts": 1,
+    "task_retries": 1,
+    "whole_command_timeout": null
+  },
+  "experiment_stage": "locked_test_once",
+  "locked_test": {
+    "archive": "/Users/bytedance/CodeA/skilloptdiy/examples/coding-hidden-v2/test.enc",
+    "archive_sha256": "d96afab4e903943c55773939d0def139be4f839cd008dffdb41b5db6fe967aad",
+    "attempt": "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_attempt.json",
+    "expected_task_count": 20,
+    "final_report": "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_final_report.json",
+    "key_file": "/Users/bytedance/Documents/Codex/.skillopt-secrets/coding-hidden-v2-test.key",
+    "key_file_sha256": "661d693a182b097adc8d2c451c0d3752bd49b26161fb4d7e217d2ff285685062",
+    "lock_file": "/Users/bytedance/CodeA/skilloptdiy/examples/coding-hidden-v2/test.lock.json",
+    "receipt": "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_receipt.json",
+    "result": "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_evaluation.json",
+    "task_file": "test.jsonl",
+    "usage_ledger": "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_usage_ledger.jsonl"
+  },
+  "runner_role": "mechanical_execution_only",
+  "runtime": {
+    "python_executable": "/opt/homebrew/Cellar/python@3.10/3.10.20/Frameworks/Python.framework/Versions/3.10/bin/python3.10",
+    "python_version": [
+      3,
+      10,
+      20
+    ]
+  },
+  "schema_version": 1,
+  "selected_candidate": {
+    "average_score": 1.0,
+    "contract_macro_accuracy": 1.0,
+    "seed": "seed-c",
+    "selection_rule": [
+      "task_accuracy_desc",
+      "contract_macro_accuracy_desc",
+      "skill_bytes_asc",
+      "seed_asc"
+    ],
+    "skill_bytes": 592,
+    "skill_path": "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/seed-c/executive/best_skill.md",
+    "skill_sha256": "93f6b57434c532626addf070f992faeede4ed9cd5982248c8eb632b5b559b290",
+    "task_accuracy": 1.0
+  },
+  "source_run_dir": "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop",
+  "usage_scope": {
+    "optimizer_api": "actual_same_run_usage",
+    "target_agent_tokens": "out_of_scope"
+  }
+}

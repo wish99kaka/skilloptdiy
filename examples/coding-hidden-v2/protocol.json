@@ -1,0 +1,37 @@
+{
+  "benchmark": "coding-hidden-v2",
+  "contract_tags": [
+    "falsy_preservation",
+    "immutability",
+    "input_validation",
+    "largest_remainder",
+    "numeric_filtering",
+    "stable_order",
+    "topological_order",
+    "unicode_casefold",
+    "window_bounds"
+  ],
+  "families": [
+    "allocation",
+    "backoff",
+    "batching",
+    "dependencies",
+    "grouping",
+    "headers",
+    "intervals",
+    "ledger",
+    "moving-average",
+    "overlay"
+  ],
+  "family_count": 10,
+  "locked_test_tasks": 20,
+  "protocol_version": 1,
+  "scoring_unit": [
+    "task_accuracy",
+    "family_macro_accuracy",
+    "contract_macro_accuracy"
+  ],
+  "selection_tasks": 10,
+  "test_access_policy": "single final attempt through textskill_optimizer.locked_eval",
+  "train_tasks": 10
+}

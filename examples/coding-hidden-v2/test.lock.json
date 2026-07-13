@@ -1,0 +1,14 @@
+{
+  "archive": "/Users/bytedance/Documents/Codex/2026-06-08/skillopt/examples/coding-hidden-v2/test.enc",
+  "archive_bytes": 13580,
+  "archive_sha256": "d96afab4e903943c55773939d0def139be4f839cd008dffdb41b5db6fe967aad",
+  "details": {
+    "benchmark": "coding-hidden-v2",
+    "family_count": 10,
+    "task_count": 20,
+    "task_file": "test.jsonl",
+    "tasks_per_family": 2
+  },
+  "format": "textskill-fernet-tar-gz-v1",
+  "sealed_at": "2026-06-22T08:13:35.455829+00:00"
+}

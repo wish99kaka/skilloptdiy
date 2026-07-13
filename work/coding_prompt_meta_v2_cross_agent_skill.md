@@ -1,0 +1,4 @@
+# Coding Agent Skill
+
+Fix failing implementations without editing tests.
+For utility functions: in keyed dedupe, check the key exists before reading it; if missing, append that record immediately and never add `None`/`null` to the seen set. For email/case-insensitive dedupe, compare normalized keys with `casefold()` while preserving original records. For nested path get/pluck, trim path segments, ignore empty separators, handle dict keys and list indexes with bounds checks, return defaults for getter utilities, and skip missing records for pluck/collection utilities. Keep stable sorts with missing keys last via `(key not in item, item.get(key))`. For reversed inclusive ranges, swap bounds and always emit ascending output. For delimited numeric parsers, skip empty tokens and wrap conversion in `try`/`except` to skip malformed tokens while preserving signs/units. Use Decimal ROUND_HALF_UP for money rounding.
