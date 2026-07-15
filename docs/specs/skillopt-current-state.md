@@ -57,6 +57,21 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
   raw/subclassed/tampered final plans are rejected; transitive static and
   cold-process runtime import audits keep final-test and optimization modules
   disconnected.
+- M3 paper fast loop: six official SkillOpt v0.2.0 prompts are bundled with
+  locked hashes and strict local response schemas derived from their output
+  contracts. `PaperFastLoop.run_step(...)` separates failure/success
+  minibatches, performs up to three real chained semantic refinement calls,
+  hierarchically merges failure and success proposals in frozen profile-sized
+  batches, then always executes the failure-prioritized final merge and
+  optimizer-model top-L ranking in Algorithm 1 order. Semantic merge/rank
+  failures use a recorded retry policy and exhaust into an unchanged skipped
+  step, never a local fallback. The four edit operations apply sequentially
+  with full protected-region intersection checks and a hash-chained report.
+  The result replays exactly from input skill plus ranked edits; its strict
+  scalar gate initializes through the registered selection owner, keeps its
+  skill-hash cache private, and preserves separate current/best state. The
+  refinement prompt is an explicit local resolution of a paper requirement
+  absent from official v0.2.0, not an upstream reuse claim.
 - External editor path through `examples/coding/openai_compatible_skill_editor.py`.
 - Executive optimizer with bounded atomic edits, learning-rate schedule, rejected buffer, validation gate, slow update, meta skill, checkpoint, and early stop.
 - `coding-hidden-v2` builder/validator with contract tags and contract macro accuracy.
@@ -139,14 +154,14 @@ evidence, not as a paper-faithful or held-out baseline-superiority claim.
 ## Main Gap Versus Paper
 
 The contract-aware same-target loop and its one locked attempt are complete.
-The paper contract is now enforced, but the paper engine and evidence campaign
-have not begun.
+The paper contract, runtime firewall, and one-step fast engine are now enforced;
+the epoch engine and evidence campaign have not begun.
 
 Highest-impact remaining gaps:
 
 1. The current executive algorithm is not paper-faithful: selection contract diagnostics and benchmark-specific mechanisms feed optimization, merge/ranking semantics differ, buffer and slow/meta lifecycles differ, and the paper-default run was not exercised.
-2. The separate profile, provenance contract, foundational conformance suite,
-   and runtime data firewall exist; the paper fast-loop engine is still missing.
+2. The paper fast step exists, but epoch-local buffers, scheduling, deterministic
+   resume, and the epoch-2 slow/meta lifecycle are still missing.
 3. The consumed `coding-hidden-v2` split cannot support a future paper-faithful held-out claim; a fresh split or official benchmark is required.
 4. The local matrix lacks several paper baselines, ablations, benchmark/model/harness breadth, and target-agent token accounting.
 
@@ -423,9 +438,9 @@ Active next work:
 1. Treat WP0/M0 as complete: the source lock pins the paper and Microsoft
    SkillOpt `v0.2.0`, the default test/CI gate is reproducible, incompatible
    executive editors fail fast, and historical operator docs are audit-only.
-2. Treat M2 runtime data isolation as complete. Execute M3/WP2 next: one
-   deterministic fake-backend fast-loop vertical slice before expanding the
-   remaining optimizer mechanisms.
+2. Treat M3/WP2 as complete. Execute M4/WP3 next: persist epoch-local state,
+   scheduler/cache state, and an exact crash/resume path before adding real
+   slow/meta updates from epoch 2.
 3. Keep paid work blocked until WP4 zero-cost conformance passes.
 
 ## Practical Review Rule

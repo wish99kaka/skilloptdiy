@@ -43,6 +43,11 @@ class PaperEditOperation(str, Enum):
     DELETE = "delete"
 
 
+class PaperEditSource(str, Enum):
+    FAILURE = "failure"
+    SUCCESS = "success"
+
+
 @dataclass(frozen=True)
 class PaperEdit:
     edit_id: str
@@ -51,10 +56,18 @@ class PaperEdit:
     content: str = ""
     rationale: str = ""
     support_count: int = 1
+    source_type: PaperEditSource | None = None
 
     def __post_init__(self) -> None:
-        if not self.edit_id.strip():
+        if type(self.edit_id) is not str or not self.edit_id.strip():
             raise ValueError("paper edit requires an edit_id")
+        if type(self.operation) is not PaperEditOperation:
+            raise ValueError("paper edit operation must be exact PaperEditOperation")
+        if any(
+            type(value) is not str
+            for value in (self.target, self.content, self.rationale)
+        ):
+            raise ValueError("paper edit text fields must be exact strings")
         if self.operation in {
             PaperEditOperation.INSERT_AFTER,
             PaperEditOperation.REPLACE,
@@ -69,8 +82,13 @@ class PaperEdit:
             raise ValueError(f"{self.operation.value} requires content")
         if self.operation is PaperEditOperation.DELETE and self.content:
             raise ValueError("delete cannot carry replacement content")
-        if self.support_count < 1:
+        if type(self.support_count) is not int or self.support_count < 1:
             raise ValueError("paper edit support_count must be >= 1")
+        if (
+            self.source_type is not None
+            and type(self.source_type) is not PaperEditSource
+        ):
+            raise ValueError("paper edit source_type must be failure or success")
 
 
 @dataclass(frozen=True)

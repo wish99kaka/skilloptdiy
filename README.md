@@ -63,7 +63,17 @@ signed train responses are reverified at the optimizer
 seam, selection exposes one normalized scalar, and final test requires a
 revalidated frozen plan bound to the real runner/scorer/harness bytes. The
 paper package uses lazy exports so a cold final-only import does not execute
-optimization modules. The paper fast loop is the next milestone.
+optimization modules. M3 adds a replayable paper fast step: the six official
+v0.2.0 reflection/merge/ranking prompts are hash-locked, optimizer responses
+are schema- and operation-validated, failure and success minibatches receive
+real semantic refinement, profile-sized hierarchical failure/success merges,
+the failure-prioritized final merge, and model top-L ranking run in Algorithm 1
+order. Semantic merge/rank failures follow a recorded retry policy and then
+skip unchanged; successful patches pass through a strict cached scalar gate
+whose initial score comes from the registered selection owner, while current
+and best state remain separate. The
+epoch loop is the next milestone; this engine is still intentionally absent
+from the CLI.
 
 Read `docs/specs/skillopt-paper-faithful-roadmap.md` first. It defines source
 precedence, protocol isolation, the official-code reuse boundary, conformance

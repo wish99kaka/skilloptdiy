@@ -311,8 +311,8 @@ in Section 13 are the only executable plan; this table is only a status index.
 | 0. Freeze and provenance | Completed | WP0 |
 | 1. Spec and profile | Completed | WP1 |
 | 2. Data firewall | Completed | M2 / WP1B |
-| 3. Patch fast core | Next | M3 / WP2 |
-| 4. Epoch state | Pending | WP3 |
+| 3. Patch fast core | Completed | M3 / WP2 |
+| 4. Epoch state | Next | M4 / WP3 |
 | 5. Slow/meta | Pending | WP3 |
 | 6. Mechanism completeness | Pending | WP3 |
 | 7. Zero-cost conformance | Pending | WP4 |
@@ -565,7 +565,7 @@ optimization module.
 
 #### WP2 — Implement the paper fast loop
 
-Status: next. Dependencies: WP1B.
+Status: completed. Dependencies: WP1B.
 
 1. Implement `append`, `insert_after`, `replace`, and `delete` with protected
    slow-field enforcement and one apply report per edit.
@@ -573,9 +573,13 @@ Status: next. Dependencies: WP1B.
    refinement capped at three rounds.
 3. Implement failure merge, success merge, failure-prioritized final merge, and
    optimizer-model ranking clipped to top `L`; local string ranking is not an
-   allowed success fallback.
+   allowed success fallback. Same-source proposals merge hierarchically in
+   frozen profile-sized batches; semantic merge/rank failures follow the
+   recorded retry policy and then skip the step unchanged.
 4. Implement strict scalar selection gating, current/best separation, skill-hash
-   score cache, scheduler, and replayable step artifacts.
+   score cache initialized by the selection owner, and replayable step
+   artifacts. External cache restoration is forbidden until WP3 supplies an
+   authenticated checkpoint path.
 
 Exit gate: a deterministic fake backend produces a golden event trace matching
 Algorithm 1, and every candidate can be reconstructed from its input skill,
@@ -588,11 +592,13 @@ Dependencies: WP2.
 1. Implement epoch-local rejected-step buffers and deterministic data plans.
 2. Implement checkpoints whose resumed event/artifact sequence matches an
    uninterrupted run.
-3. Skip real slow/meta updates in epoch 1. From epoch 2, compare adjacent epoch
+3. Implement the epoch/step edit-budget scheduler, including persisted scheduler
+   state needed for exact resume.
+4. Skip real slow/meta updates in epoch 1. From epoch 2, compare adjacent epoch
    skills on the same training samples, generate four-way longitudinal state,
    gate the protected slow candidate, and expose meta guidance only to future
    optimizer stages.
-4. Add `A>1` accumulation, stable analyst concurrency, autonomous LR, and
+5. Add `A>1` accumulation, stable analyst concurrency, autonomous LR, and
    `rewrite_from_suggestions` after the default patch/cosine path passes.
 
 Exit gate: Phase 4–6 mechanism tests pass independently, including buffer reset,

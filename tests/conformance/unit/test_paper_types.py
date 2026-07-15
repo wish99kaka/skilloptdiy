@@ -63,6 +63,9 @@ class PaperTypeTests(unittest.TestCase):
 
         self.assertEqual({item.operation for item in edits}, set(PaperEditOperation))
 
+        with self.assertRaisesRegex(ValueError, "exact PaperEditOperation"):
+            PaperEdit(edit_id="string-op", operation="append", content="unsafe")
+
     def test_paper_state_keeps_current_and_best_skill_separate(self) -> None:
         state = PaperState(
             epoch=2,

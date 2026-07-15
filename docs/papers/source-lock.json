@@ -14,7 +14,32 @@
     "commit_sha": "e4ea6a6771e797ef820cdd8bfea64c57e0481065",
     "tree_sha": "5a603e937a20f1078059f94039a50028c022487a",
     "license": "MIT",
-    "reused_files": []
+    "reused_files": [
+      {
+        "path": "skillopt/prompts/analyst_error.md",
+        "sha256": "40eaf561c7fdbdfc1c7a1febd9f7c3540270ca6d5e7e0a8798c7c90b8d303200"
+      },
+      {
+        "path": "skillopt/prompts/analyst_success.md",
+        "sha256": "0ffc8f85e13af2b14e1b9f3307a44d30ecf60e9d803ccb9190fdd9785e43fabc"
+      },
+      {
+        "path": "skillopt/prompts/merge_failure.md",
+        "sha256": "071313895da226840164ccda6e7f01d5f849ea128037d3f337cddab66ae799db"
+      },
+      {
+        "path": "skillopt/prompts/merge_success.md",
+        "sha256": "6b816bcf5526d31164b779921f3c8c847541bf92fbe26c6a38b555eb3b753712"
+      },
+      {
+        "path": "skillopt/prompts/merge_final.md",
+        "sha256": "b2c7b452032fbbe3b223e877b766ea6202775d685c3b32e68956a402e775b84b"
+      },
+      {
+        "path": "skillopt/prompts/ranking.md",
+        "sha256": "8bf37725b7b328d8d54af7a8fb173179bdd0f02b57399ed2cc7a5b5d25edea8a"
+      }
+    ]
   },
   "local_baseline": {
     "tag": "contract-aware-extension-v1",

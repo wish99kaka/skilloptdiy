@@ -59,6 +59,11 @@ def _validate(
             violations.append(
                 SchemaViolation(path=path, message=f"requires at least {schema['minItems']} items")
             )
+        maximum = schema.get("maxItems")
+        if maximum is not None and len(instance) > maximum:
+            violations.append(
+                SchemaViolation(path=path, message=f"allows at most {maximum} items")
+            )
         item_schema = schema.get("items")
         if item_schema:
             for index, item in enumerate(instance):
