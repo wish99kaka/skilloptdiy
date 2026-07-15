@@ -310,8 +310,8 @@ in Section 13 are the only executable plan; this table is only a status index.
 | --- | --- | --- |
 | 0. Freeze and provenance | Completed | WP0 |
 | 1. Spec and profile | Completed | WP1 |
-| 2. Data firewall | Contract/tests complete; runtime pending | M2 / WP2 |
-| 3. Patch fast core | Pending | WP2 |
+| 2. Data firewall | Completed | M2 / WP1B |
+| 3. Patch fast core | Next | M3 / WP2 |
 | 4. Epoch state | Pending | WP3 |
 | 5. Slow/meta | Pending | WP3 |
 | 6. Mechanism completeness | Pending | WP3 |
@@ -535,9 +535,37 @@ Completion evidence:
   immutability, and static imports.
 - No paper optimizer engine or paid/model-backed experiment was introduced.
 
+#### WP1B — Wire the runtime data firewall
+
+Status: completed on 2026-07-15. Dependencies: WP1.
+
+1. Freeze a content-addressed controller registry: the actual argv prefix must
+   exactly match an ordered, hash-verified executable/runner chain, and that
+   chain plus its Ed25519 response key may own exactly one train, selection, or
+   test role and one hash-verified split manifest. Split IDs and manifest
+   hashes are globally single-owner; consumed splits are rejected. Reverify
+   signed train responses and manifest identity at the optimizer seam.
+2. Run the selection data owner in its registered process; accept exactly one
+   finite `score` field and retain only normalized `SelectionScore` values.
+3. Put final-test evaluation in a disconnected module and registered process;
+   rebuild the exact `FinalEvaluationPlan`, then bind registry, split, runner,
+   scorer, and harness hashes to verified bytes immediately before test access.
+4. Make `paper.__init__` lazy so cold final imports do not execute optimization
+   modules. Add process-owned selection sentinels, role-reuse/split-spoof,
+   signed-evidence/final-plan attacks, rich-response rejection, and both static
+   transitive and cold-process runtime import audits.
+
+Exit gate: after selection has run, a captured optimizer request contains only
+train-origin fields signed by the registered train owner; a runner/key cannot
+cross roles, and a split ID/manifest cannot cross owners or be relabeled;
+selection/test task objects never enter the
+optimizer process; the test process cannot run through the paper controller
+without a revalidated artifact-bound frozen plan; cold final imports load no
+optimization module.
+
 #### WP2 — Implement the paper fast loop
 
-Dependencies: WP1.
+Status: next. Dependencies: WP1B.
 
 1. Implement `append`, `insert_after`, `replace`, and `delete` with protected
    slow-field enforcement and one apply report per edit.
@@ -626,23 +654,31 @@ requires the corresponding measured breadth.
 - Do not expand toward 52 cells before one official benchmark passes.
 - Do not claim paper-equivalent cost until target-agent usage is captured.
 
-## 15. Claim Milestones
+## 15. Execution Milestones
 
-This is a claim-level summary, not a second execution plan.
+These names follow the project M0–M8 sequence; the WP sections remain the
+executable plan.
 
 - **M0 — Baseline closed:** WP0 passes and provenance plus engineering gates are
   reproducible.
 - **M1 — Paper contract enforced:** WP1 passes; extension controls cannot enter
   the profile, and selection/test interfaces are fail-closed before engine
   wiring.
-- **M2 — Paper mechanisms conformant:** WP2–WP4 pass; the complete supported
-  mechanism set has zero-cost conformance evidence.
-- **M3 — Development evidence:** the three-seed paper-faithful development
-  matrix passes its preregistered gate.
-- **M4 — Fresh held-out evidence:** a new atomic test matrix supports a
-  `paper_faithful_heldout` claim.
-- **M5 — Paper-scale replication:** measured breadth supports the claimed
-  benchmark/model/harness scope.
+- **M2 — Data firewall enforced:** WP1B passes; selection exposes only a scalar,
+  final test is isolated, and neither source can enter optimizer payloads.
+- **M3 — Fast loop conformant:** WP2 passes with the Algorithm 1 fake-backend
+  event sequence, real reflection/merge/rank stages, replayable patches, and a
+  strict cached gate.
+- **M4 — Epoch loop conformant:** WP3 state, scheduler, epoch-local buffer,
+  resume, slow, and meta lifecycle tests pass.
+- **M5 — Mechanisms complete:** accumulation, autonomous LR, rewrite mode,
+  concurrency, and full artifact lineage pass independent tests.
+- **M6 — Zero-cost acceptance:** WP4 passes; paid experiments remain blocked
+  until this gate is green.
+- **M7 — Development evidence:** WP5's smoke, pilot, three-seed baselines, and
+  registered ablations pass without protocol drift.
+- **M8 — Final evidence:** WP6 evaluates all frozen candidates once on a new
+  untouched test and may then emit `paper_faithful_heldout`.
 
 Do not make a calendar commitment from the old executive code size. Estimate
 remaining implementation time only after WP1 fixes the reuse boundary and WP2

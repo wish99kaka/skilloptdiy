@@ -56,7 +56,14 @@ lineage is hash-bound and validated against a versioned schema, and the
 consumed-split registry blocks relabeling old evidence. The public
 `assess_paper_profile(...)` and
 `assess_paper_run(...)` functions perform these checks without constructing a
-model backend. Runtime selection/test isolation is the next milestone.
+model backend. M2 adds the runtime firewall: a content-addressed registry binds
+each dataset-owning executable/runner launch chain and response key to exactly
+one train, selection, or final-test role and one hash-verified split manifest;
+signed train responses are reverified at the optimizer
+seam, selection exposes one normalized scalar, and final test requires a
+revalidated frozen plan bound to the real runner/scorer/harness bytes. The
+paper package uses lazy exports so a cold final-only import does not execute
+optimization modules. The paper fast loop is the next milestone.
 
 Read `docs/specs/skillopt-paper-faithful-roadmap.md` first. It defines source
 precedence, protocol isolation, the official-code reuse boundary, conformance

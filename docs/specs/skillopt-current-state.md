@@ -1,6 +1,6 @@
 # SkillOpt Current State
 
-Date: 2026-07-13
+Date: 2026-07-15
 
 ## Objective
 
@@ -36,6 +36,27 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
   `assess_paper_run(...)`, with tests for extension controls, protocol/claim
   mismatch, consumed split reuse, scalar-only selection payloads, strict tie
   rejection, test access, immutable receipts, and the static import firewall.
+- M2 runtime data firewall: a content-addressed `ControllerRegistry` requires
+  the executed argv prefix to match an ordered, hash-verified
+  executable/runner chain, then binds that chain and its Ed25519 response key
+  to exactly one train, selection, or test role and one hash-verified split
+  manifest. Split IDs and manifest hashes are globally single-owner, and the
+  M1 consumed-split registry is enforced before controller use.
+  `PaperOptimizationController` reverifies signed
+  `TrainEvidenceBatch` responses against that registry at the backend seam;
+  `SelectionController` retains only a normalized `SelectionScore` from an
+  exact scalar response.
+- Final-test evaluation is isolated in `paper.final_evaluation`, is not exported
+  through the optimization package interface, imports no optimization/data
+  modules, and is not preceded by eager package imports. It revalidates the
+  exact candidate/policy plan and binds registry, split, executable, runner,
+  scorer, and harness identities to verified artifact bytes before the test
+  process can run.
+- Dynamic selection sentinels, forged/tampered signed evidence, role reuse,
+  split/manifest reuse or spoofing, consumed splits, rich responses, and
+  raw/subclassed/tampered final plans are rejected; transitive static and
+  cold-process runtime import audits keep final-test and optimization modules
+  disconnected.
 - External editor path through `examples/coding/openai_compatible_skill_editor.py`.
 - Executive optimizer with bounded atomic edits, learning-rate schedule, rejected buffer, validation gate, slow update, meta skill, checkpoint, and early stop.
 - `coding-hidden-v2` builder/validator with contract tags and contract macro accuracy.
@@ -124,8 +145,8 @@ have not begun.
 Highest-impact remaining gaps:
 
 1. The current executive algorithm is not paper-faithful: selection contract diagnostics and benchmark-specific mechanisms feed optimization, merge/ranking semantics differ, buffer and slow/meta lifecycles differ, and the paper-default run was not exercised.
-2. The separate profile, provenance contract, and foundational conformance
-   suite exist; the runtime data firewall and paper engine are still missing.
+2. The separate profile, provenance contract, foundational conformance suite,
+   and runtime data firewall exist; the paper fast-loop engine is still missing.
 3. The consumed `coding-hidden-v2` split cannot support a future paper-faithful held-out claim; a fresh split or official benchmark is required.
 4. The local matrix lacks several paper baselines, ablations, benchmark/model/harness breadth, and target-agent token accounting.
 
@@ -402,9 +423,9 @@ Active next work:
 1. Treat WP0/M0 as complete: the source lock pins the paper and Microsoft
    SkillOpt `v0.2.0`, the default test/CI gate is reproducible, incompatible
    executive editors fail fast, and historical operator docs are audit-only.
-2. Treat WP1/M1 as complete. Execute M2 runtime data-firewall wiring next as
-   the first vertical slice toward WP2; do not start optimizer semantics before
-   selection/test isolation is executable end to end.
+2. Treat M2 runtime data isolation as complete. Execute M3/WP2 next: one
+   deterministic fake-backend fast-loop vertical slice before expanding the
+   remaining optimizer mechanisms.
 3. Keep paid work blocked until WP4 zero-cost conformance passes.
 
 ## Practical Review Rule

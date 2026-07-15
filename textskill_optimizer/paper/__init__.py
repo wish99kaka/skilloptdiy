@@ -1,73 +1,72 @@
-"""Paper-faithful SkillOpt contracts, independent from extension protocols."""
+"""Lazy public surface for paper-faithful contracts.
 
-from .config import (
-    PaperProfile,
-    PaperProfileAssessment,
-    PaperProfileViolation,
-    ProfileViolation,
-    assess_paper_profile,
-    load_paper_profile,
-)
-from .claims import ClaimClass, EvidenceLevel
-from .backend import (
-    OptimizerBackend,
-    OptimizerRequest,
-    OptimizerResponse,
-    OptimizerStage,
-)
-from .contract import ContractViolation, PaperRunAssessment, assess_paper_run
-from .data import (
-    DataFirewallViolation,
-    PaperDataAccessPolicy,
-    RunPhase,
-    SelectionDecision,
-    SelectionScore,
-    SplitRole,
-    strict_selection_decision,
-)
-from .lineage import LineageAssessment, RunLineage, assess_lineage
-from .registry import ConsumedSplit, ConsumedSplitRegistry
-from .provenance import canonical_json_sha256
-from .types import (
-    AlgorithmEvent,
-    AlgorithmEventType,
-    PaperEdit,
-    PaperEditOperation,
-    PaperState,
-)
+Keeping this module import-free is part of the final-test firewall: Python
+executes a package initializer before any child module, so eager convenience
+exports would otherwise load optimization code during a cold final-only import.
+"""
 
-__all__ = [
-    "AlgorithmEvent",
-    "AlgorithmEventType",
-    "ClaimClass",
-    "ContractViolation",
-    "ConsumedSplit",
-    "ConsumedSplitRegistry",
-    "DataFirewallViolation",
-    "EvidenceLevel",
-    "LineageAssessment",
-    "OptimizerBackend",
-    "OptimizerRequest",
-    "OptimizerResponse",
-    "OptimizerStage",
-    "PaperProfile",
-    "PaperProfileAssessment",
-    "PaperProfileViolation",
-    "PaperRunAssessment",
-    "PaperEdit",
-    "PaperEditOperation",
-    "PaperState",
-    "PaperDataAccessPolicy",
-    "ProfileViolation",
-    "RunLineage",
-    "RunPhase",
-    "SelectionDecision",
-    "SelectionScore",
-    "SplitRole",
-    "assess_lineage",
-    "assess_paper_run",
-    "assess_paper_profile",
-    "canonical_json_sha256",
-    "load_paper_profile",
-    "strict_selection_decision",
-]
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+
+_EXPORT_MODULES = {
+    "AlgorithmEvent": "types",
+    "AlgorithmEventType": "types",
+    "ClaimClass": "claims",
+    "ContractViolation": "contract",
+    "ConsumedSplit": "registry",
+    "ConsumedSplitRegistry": "registry",
+    "ControllerArtifact": "controller_process",
+    "ControllerRegistration": "controller_process",
+    "ControllerRegistry": "controller_process",
+    "ControllerRole": "controller_process",
+    "DataFirewallViolation": "errors",
+    "EvidenceLevel": "claims",
+    "LineageAssessment": "lineage",
+    "OptimizerBackend": "backend",
+    "OptimizerPayload": "data",
+    "OptimizerRequest": "backend",
+    "OptimizerResponse": "backend",
+    "OptimizerStage": "backend",
+    "PaperDataAccessPolicy": "data",
+    "PaperEdit": "types",
+    "PaperEditOperation": "types",
+    "PaperOptimizationController": "optimization",
+    "PaperProfile": "config",
+    "PaperProfileAssessment": "config",
+    "PaperProfileViolation": "config",
+    "PaperRunAssessment": "contract",
+    "PaperState": "types",
+    "ProfileViolation": "config",
+    "RunLineage": "lineage",
+    "RunPhase": "data",
+    "SelectionController": "data",
+    "SelectionDecision": "data",
+    "SelectionScore": "data",
+    "SplitRole": "data",
+    "TrainController": "data",
+    "TrainEvidenceBatch": "data",
+    "assess_lineage": "lineage",
+    "assess_paper_profile": "config",
+    "assess_paper_run": "contract",
+    "canonical_json_sha256": "provenance",
+    "load_paper_profile": "config",
+    "strict_selection_decision": "data",
+}
+
+__all__ = sorted(_EXPORT_MODULES)
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(name)
+    value = getattr(import_module(f"{__name__}.{module_name}"), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
