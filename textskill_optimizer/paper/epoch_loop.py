@@ -7,13 +7,22 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from .artifacts import (
+    OptimizerExchange,
+    PaperArtifactKind,
+    PaperArtifactLedger,
+    PaperArtifactLineage,
+    optimizer_request_payload,
+    optimizer_response_payload,
+)
 from .backend import OptimizerRequest, OptimizerResponse, OptimizerStage
 from .checkpoint import CheckpointAuthenticator, PaperEpochCheckpoint
 from .config import PaperProfile
 from .controller_process import ControllerRole
-from .data import SelectionScore, TrainEvidenceBatch
+from .data import SelectionScore, StepTrainEvidence
 from .epoch_plan import EpochCursor, PaperEpochPlan
-from .fast_loop import FastStepResult, PaperFastLoop
+from .errors import DataFirewallViolation
+from .fast_loop import ExternalGateResult, FastStepResult, PaperFastLoop
 from .longitudinal import (
     LongitudinalEvidence,
     LongitudinalState,
@@ -32,7 +41,9 @@ from .types import (
     AlgorithmEvent,
     AlgorithmEventType,
     EpochBufferRecord,
+    PaperEdit,
     PaperState,
+    PaperSuggestion,
 )
 
 
@@ -92,11 +103,19 @@ class PaperEpochLoop:
         self._profile = validated_profile
         self._plan = plan
         self._plan_sha256 = canonical_json_sha256(plan.to_dict())
-        self._fast_loop = PaperFastLoop(controller, profile=validated_profile)
+        self._fast_loop = PaperFastLoop(
+            controller,
+            profile=validated_profile,
+            _mechanisms=plan.mechanisms,
+        )
         self._events: list[AlgorithmEvent] = []
         self._epoch_buffer: list[EpochBufferRecord] = []
         self._epoch_snapshots: list[str] = []
+        self._epoch_snapshot_artifact_ids: list[str] = []
         self._run_completed = False
+        self._artifacts = PaperArtifactLedger()
+        self._artifact_heads: dict[str, str | None] = {}
+        self._pending_epoch_exchanges: list[OptimizerExchange] = []
 
     @property
     def events(self) -> tuple[AlgorithmEvent, ...]:
@@ -119,6 +138,10 @@ class PaperEpochLoop:
         return self._fast_loop.score_cache
 
     @property
+    def artifact_lineage(self) -> PaperArtifactLineage:
+        return self._artifacts.lineage
+
+    @property
     def longitudinal_skills(self) -> tuple[str, str]:
         state = self._fast_loop.state
         if (
@@ -129,7 +152,7 @@ class PaperEpochLoop:
             raise ValueError("longitudinal skills are available only at an epoch boundary")
         return self._epoch_snapshots[-1], state.current_skill
 
-    def collect_train_evidence(self) -> TrainEvidenceBatch:
+    def collect_train_evidence(self) -> StepTrainEvidence:
         if self._run_completed:
             raise ValueError("paper epoch run is complete")
         state = self._fast_loop.state
@@ -137,11 +160,16 @@ class PaperEpochLoop:
         if next_step > self._plan.steps_per_epoch:
             raise ValueError(f"epoch {state.epoch} is complete")
         cursor = self._plan.cursor(epoch=state.epoch, step=next_step)
-        return self._controller.train.collect(
-            state.current_skill,
-            batch_id=cursor.batch_id,
-            batch_seed=cursor.batch_seed,
-            batch_size=cursor.batch_size,
+        return StepTrainEvidence(
+            tuple(
+                self._controller.train.collect(
+                    state.current_skill,
+                    batch_id=batch.batch_id,
+                    batch_seed=batch.batch_seed,
+                    batch_size=batch.batch_size,
+                )
+                for batch in cursor.batches
+            )
         )
 
     def collect_longitudinal_evidence(self) -> LongitudinalEvidence:
@@ -166,6 +194,7 @@ class PaperEpochLoop:
 
     def initialize(self, initial_skill: str) -> PaperState:
         state = self._fast_loop.initialize(initial_skill)
+        self._initialize_artifacts(state)
         self._events.append(
             self._fast_loop._record_lifecycle_event(
                 AlgorithmEventType.RUN_STARTED,
@@ -186,11 +215,16 @@ class PaperEpochLoop:
                 },
             )
         )
+        self._record_event_artifacts(tuple(self._events))
         return state
 
-    def run_step(self, *, train_evidence: TrainEvidenceBatch) -> EpochStepResult:
+    def run_step(self, *, train_evidence: StepTrainEvidence) -> EpochStepResult:
         if self._run_completed:
             raise ValueError("paper epoch run is complete")
+        if type(train_evidence) is not StepTrainEvidence:
+            raise DataFirewallViolation(
+                "scheduled batch evidence requires exact StepTrainEvidence"
+            )
         state = self._fast_loop.state
         next_step = state.step + 1
         if next_step > self._plan.steps_per_epoch:
@@ -198,15 +232,15 @@ class PaperEpochLoop:
         cursor = self._plan.cursor(epoch=state.epoch, step=next_step)
         self._fast_loop._prepare_epoch_step(
             tuple(self._epoch_buffer),
-            batch_id=cursor.batch_id,
-            batch_seed=cursor.batch_seed,
-            batch_size=cursor.batch_size,
+            batches=cursor.batches,
         )
-        fast_step = self._fast_loop.run_step(
+        fast_step = self._fast_loop._run_accumulated_step(
             train_evidence=train_evidence,
+            analysis_budget=cursor.analysis_budget,
             edit_budget=cursor.edit_budget,
         )
         self._events.extend(fast_step.events)
+        self._record_fast_step_artifacts(train_evidence, fast_step)
         decision_event = next(
             event
             for event in reversed(fast_step.events)
@@ -225,6 +259,9 @@ class PaperEpochLoop:
                 step=next_step,
                 failure_patterns=fast_step.failure_patterns,
                 rejected_edits=fast_step.ranked_edits if rejected else (),
+                rejected_suggestions=(
+                    fast_step.ranked_suggestions if rejected else ()
+                ),
                 score_delta=(
                     float(decision_event.payload["delta"])
                     if rejected
@@ -243,6 +280,7 @@ class PaperEpochLoop:
             raise ValueError("paper epoch run is complete")
         state = self._fast_loop.state
         fast_epoch_end_skill = state.current_skill
+        fast_epoch_end_skill_id = self._require_artifact_head("current_skill")
         if state.step != self._plan.steps_per_epoch:
             raise ValueError(
                 f"epoch {state.epoch} has not completed all scheduled steps"
@@ -260,6 +298,7 @@ class PaperEpochLoop:
                     {"reason": "before_start_epoch"},
                 ),
             ]
+            pre_recorded_event_count = 0
         else:
             if type(longitudinal_evidence) is not LongitudinalEvidence:
                 raise ValueError(
@@ -268,8 +307,10 @@ class PaperEpochLoop:
             boundary_events = list(
                 self._run_slow_meta(longitudinal_evidence)
             )
+            pre_recorded_event_count = len(boundary_events)
             state = self._fast_loop.state
         self._epoch_snapshots.append(fast_epoch_end_skill)
+        self._epoch_snapshot_artifact_ids.append(fast_epoch_end_skill_id)
         boundary_events.append(
             self._fast_loop._record_lifecycle_event(
                 AlgorithmEventType.EPOCH_COMPLETED,
@@ -303,6 +344,9 @@ class PaperEpochLoop:
                 )
             )
         self._events.extend(boundary_events)
+        self._record_event_artifacts(
+            tuple(boundary_events[pre_recorded_event_count:])
+        )
         return EpochCompletionResult(
             completed_epoch=completed_epoch,
             state=next_state,
@@ -314,6 +358,7 @@ class PaperEpochLoop:
         self,
         evidence: LongitudinalEvidence,
     ) -> tuple[AlgorithmEvent, ...]:
+        self._pending_epoch_exchanges = []
         state = self._fast_loop.state
         previous_skill, current_epoch_skill = self.longitudinal_skills
         longitudinal_batch_id = self._longitudinal_batch_id(state.epoch)
@@ -397,6 +442,15 @@ class PaperEpochLoop:
                 },
             )
         )
+        self._record_slow_meta_artifacts(
+            evidence=evidence,
+            previous_skill=previous_skill,
+            current_skill=current_epoch_skill,
+            slow_candidate=slow_candidate,
+            slow_gate=slow_gate,
+            meta_skill=parsed_meta.content,
+            events=tuple(events),
+        )
         return tuple(events)
 
     def _complete_epoch_stage(
@@ -459,6 +513,9 @@ class PaperEpochLoop:
             raise OptimizerContractViolation(
                 "optimizer response call_id does not match its request"
             )
+        self._pending_epoch_exchanges.append(
+            OptimizerExchange(request=request, response=response)
+        )
         return response
 
     def _longitudinal_batch_id(self, epoch: int) -> str:
@@ -485,6 +542,501 @@ class PaperEpochLoop:
             16,
         )
 
+    def _initialize_artifacts(self, state: PaperState) -> None:
+        registry = self._controller.train.registry
+        profile_record = self._artifacts.add(
+            PaperArtifactKind.PROFILE,
+            self._profile.to_dict(),
+        )
+        registry_record = self._artifacts.add(
+            PaperArtifactKind.CONTROLLER_REGISTRY,
+            {
+                "schema_version": "paper-controller-registry-v1",
+                "registrations": [
+                    item.to_manifest()
+                    for item in sorted(
+                        registry.registrations,
+                        key=lambda value: value.controller_id,
+                    )
+                ],
+            },
+        )
+        plan_record = self._artifacts.add(
+            PaperArtifactKind.EPOCH_PLAN,
+            self._plan.to_dict(),
+            parent_ids=(profile_record.artifact_id,),
+        )
+        skill_record = self._artifacts.add(
+            PaperArtifactKind.SKILL,
+            {
+                "role": "initial",
+                "skill_text": state.current_skill,
+                "skill_sha256": _sha256(state.current_skill),
+            },
+            parent_ids=(plan_record.artifact_id,),
+        )
+        score_record = self._artifacts.add(
+            PaperArtifactKind.SELECTION_SCORE,
+            {
+                "role": "initial",
+                "score": state.current_score.value,
+                "skill_sha256": _sha256(state.current_skill),
+            },
+            parent_ids=(
+                skill_record.artifact_id,
+                registry_record.artifact_id,
+            ),
+        )
+        self._artifact_heads = {
+            "profile": profile_record.artifact_id,
+            "plan": plan_record.artifact_id,
+            "registry": registry_record.artifact_id,
+            "current_skill": skill_record.artifact_id,
+            "current_score": score_record.artifact_id,
+            "meta_skill": None,
+            "last_event": None,
+        }
+
+    def _record_slow_meta_artifacts(
+        self,
+        *,
+        evidence: LongitudinalEvidence,
+        previous_skill: str,
+        current_skill: str,
+        slow_candidate: str,
+        slow_gate: ExternalGateResult,
+        meta_skill: str,
+        events: tuple[AlgorithmEvent, ...],
+    ) -> None:
+        plan_id = self._require_artifact_head("plan")
+        registry_id = self._require_artifact_head("registry")
+        current_skill_id = self._require_artifact_head("current_skill")
+        if not self._epoch_snapshot_artifact_ids:
+            raise RuntimeError("longitudinal lineage requires a prior epoch snapshot")
+        previous_skill_id = self._epoch_snapshot_artifact_ids[-1]
+        previous_record = next(
+            record
+            for record in self._artifacts.lineage.records
+            if record.artifact_id == previous_skill_id
+        )
+        if (
+            previous_record.kind is not PaperArtifactKind.SKILL
+            or previous_record.payload["skill_text"] != previous_skill
+        ):
+            raise RuntimeError("longitudinal snapshot artifact is inconsistent")
+        longitudinal_ids: list[str] = []
+        for role, batch, skill_id in (
+            ("previous", evidence.previous, previous_skill_id),
+            ("current", evidence.current, current_skill_id),
+        ):
+            record = self._artifacts.add(
+                PaperArtifactKind.LONGITUDINAL_EVIDENCE,
+                {
+                    "role": role,
+                    "controller_id": batch.controller_id,
+                    "registry_sha256": batch.registry_sha256,
+                    "split_id": batch.split_id,
+                    "split_manifest_sha256": batch.split_manifest_sha256,
+                    "canonical_request": batch.canonical_request,
+                    "canonical_payload": batch.canonical_payload,
+                    "signature": batch.signature,
+                },
+                parent_ids=(skill_id, plan_id, registry_id),
+            )
+            longitudinal_ids.append(record.artifact_id)
+        response_ids_by_stage: dict[OptimizerStage, list[str]] = {}
+        for exchange in self._pending_epoch_exchanges:
+            request_record = self._artifacts.add(
+                PaperArtifactKind.OPTIMIZER_REQUEST,
+                optimizer_request_payload(exchange.request),
+                parent_ids=(current_skill_id, *longitudinal_ids),
+            )
+            response_record = self._artifacts.add(
+                PaperArtifactKind.OPTIMIZER_RESPONSE,
+                optimizer_response_payload(exchange.response),
+                parent_ids=(request_record.artifact_id,),
+            )
+            response_ids_by_stage.setdefault(
+                exchange.request.stage,
+                [],
+            ).append(response_record.artifact_id)
+        slow_response_ids = tuple(
+            response_ids_by_stage.get(OptimizerStage.PROPOSE_SLOW_UPDATE, ())
+        )
+        meta_response_ids = tuple(
+            response_ids_by_stage.get(OptimizerStage.UPDATE_META_SKILL, ())
+        )
+        if len(slow_response_ids) != 1 or len(meta_response_ids) != 1:
+            raise RuntimeError("slow/meta lineage requires one response per stage")
+        update_record = self._artifacts.add(
+            PaperArtifactKind.UPDATE_SET,
+            {
+                "update_mode": "slow_update",
+                "input_skill_sha256": _sha256(current_skill),
+                "slow_update_content": read_slow_update_field(slow_candidate),
+            },
+            parent_ids=slow_response_ids,
+        )
+        apply_record = self._artifacts.add(
+            PaperArtifactKind.APPLY_REPORT,
+            {
+                "update_mode": "slow_update",
+                "input_skill": current_skill,
+                "input_sha256": _sha256(current_skill),
+                "output_skill": slow_candidate,
+                "output_sha256": _sha256(slow_candidate),
+                "reports": [],
+                "rewrite": None,
+            },
+            parent_ids=(current_skill_id, update_record.artifact_id),
+        )
+        candidate_record = self._artifacts.add(
+            PaperArtifactKind.SKILL,
+            {
+                "role": "slow_candidate",
+                "skill_text": slow_candidate,
+                "skill_sha256": _sha256(slow_candidate),
+            },
+            parent_ids=(apply_record.artifact_id,),
+        )
+        score_record = self._artifacts.add(
+            PaperArtifactKind.SELECTION_SCORE,
+            {
+                "role": "slow_candidate",
+                "score": slow_gate.candidate_score.value,
+                "skill_sha256": _sha256(slow_candidate),
+            },
+            parent_ids=(candidate_record.artifact_id, registry_id),
+        )
+        meta_record = self._artifacts.add(
+            PaperArtifactKind.META_SKILL,
+            {
+                "meta_skill": meta_skill,
+                "meta_skill_sha256": _sha256(meta_skill),
+                "target_visible": False,
+            },
+            parent_ids=meta_response_ids,
+        )
+        input_score_id = self._require_artifact_head("current_score")
+        for event in events:
+            event_parents: tuple[str, ...]
+            if event.event_type is AlgorithmEventType.SLOW_UPDATE_PROPOSED:
+                event_parents = (
+                    current_skill_id,
+                    input_score_id,
+                    update_record.artifact_id,
+                    apply_record.artifact_id,
+                    candidate_record.artifact_id,
+                )
+            elif event.event_type in {
+                AlgorithmEventType.SELECTION_SCORED,
+                AlgorithmEventType.CANDIDATE_ACCEPTED,
+                AlgorithmEventType.CANDIDATE_REJECTED,
+            }:
+                event_parents = (
+                    current_skill_id,
+                    input_score_id,
+                    candidate_record.artifact_id,
+                    score_record.artifact_id,
+                )
+            elif event.event_type is AlgorithmEventType.META_UPDATE_COMPLETED:
+                event_parents = (
+                    current_skill_id,
+                    meta_record.artifact_id,
+                )
+            else:
+                raise RuntimeError("unexpected slow/meta lifecycle event")
+            self._record_event_artifact(event, event_parents)
+        if slow_gate.accepted:
+            self._artifact_heads["current_skill"] = candidate_record.artifact_id
+            self._artifact_heads["current_score"] = score_record.artifact_id
+        self._artifact_heads["meta_skill"] = meta_record.artifact_id
+        self._pending_epoch_exchanges = []
+
+    def _record_fast_step_artifacts(
+        self,
+        evidence: StepTrainEvidence,
+        fast_step: FastStepResult,
+    ) -> None:
+        input_skill_id = self._require_artifact_head("current_skill")
+        input_score_id = self._require_artifact_head("current_score")
+        plan_id = self._require_artifact_head("plan")
+        registry_id = self._require_artifact_head("registry")
+        evidence_ids: list[str] = []
+        for accumulation_index, batch in enumerate(evidence.batches, 1):
+            record = self._artifacts.add(
+                PaperArtifactKind.TRAIN_EVIDENCE,
+                {
+                    "accumulation_index": accumulation_index,
+                    "controller_id": batch.controller_id,
+                    "registry_sha256": batch.registry_sha256,
+                    "split_id": batch.split_id,
+                    "split_manifest_sha256": batch.split_manifest_sha256,
+                    "canonical_request": batch.canonical_request,
+                    "canonical_payload": batch.canonical_payload,
+                    "signature": batch.signature,
+                },
+                parent_ids=(input_skill_id, plan_id, registry_id),
+            )
+            evidence_ids.append(record.artifact_id)
+
+        response_ids: list[str] = []
+        response_ids_by_call: dict[str, str] = {}
+        completed_exchanges: list[tuple[OptimizerRequest, str]] = []
+        rewrite_exchanges = tuple(
+            exchange
+            for exchange in fast_step.optimizer_exchanges
+            if exchange.request.stage is OptimizerStage.REWRITE_SKILL
+        )
+        pre_apply_exchanges = tuple(
+            exchange
+            for exchange in fast_step.optimizer_exchanges
+            if exchange.request.stage is not OptimizerStage.REWRITE_SKILL
+        )
+        for exchange in pre_apply_exchanges:
+            stage_parent_ids = _optimizer_stage_parent_ids(
+                exchange.request,
+                completed_exchanges=tuple(completed_exchanges),
+            )
+            request_record = self._artifacts.add(
+                PaperArtifactKind.OPTIMIZER_REQUEST,
+                optimizer_request_payload(exchange.request),
+                parent_ids=tuple(
+                    dict.fromkeys(
+                        (input_skill_id, *evidence_ids, *stage_parent_ids)
+                    )
+                ),
+            )
+            response_record = self._artifacts.add(
+                PaperArtifactKind.OPTIMIZER_RESPONSE,
+                optimizer_response_payload(exchange.response),
+                parent_ids=(request_record.artifact_id,),
+            )
+            response_ids.append(response_record.artifact_id)
+            response_ids_by_call[exchange.request.call_id] = (
+                response_record.artifact_id
+            )
+            completed_exchanges.append(
+                (exchange.request, response_record.artifact_id)
+            )
+
+        rank_response_ids = tuple(
+            response_ids_by_call[event.payload["call_id"]]
+            for event in fast_step.events
+            if event.event_type is AlgorithmEventType.RANK_TOP_L
+        )
+
+        update_record = self._artifacts.add(
+            PaperArtifactKind.UPDATE_SET,
+            {
+                "update_mode": self._plan.mechanisms.update_mode,
+                "ranked_edits": [
+                    _edit_artifact_payload(item)
+                    for item in fast_step.ranked_edits
+                ],
+                "ranked_suggestions": [
+                    _suggestion_artifact_payload(item)
+                    for item in fast_step.ranked_suggestions
+                ],
+            },
+            parent_ids=(
+                rank_response_ids
+                or tuple(response_ids)
+                or tuple(evidence_ids)
+            ),
+        )
+        rewrite_response_ids: list[str] = []
+        for exchange in rewrite_exchanges:
+            request_record = self._artifacts.add(
+                PaperArtifactKind.OPTIMIZER_REQUEST,
+                optimizer_request_payload(exchange.request),
+                parent_ids=(
+                    input_skill_id,
+                    *evidence_ids,
+                    update_record.artifact_id,
+                ),
+            )
+            response_record = self._artifacts.add(
+                PaperArtifactKind.OPTIMIZER_RESPONSE,
+                optimizer_response_payload(exchange.response),
+                parent_ids=(request_record.artifact_id,),
+            )
+            response_ids.append(response_record.artifact_id)
+            rewrite_response_ids.append(response_record.artifact_id)
+            response_ids_by_call[exchange.request.call_id] = (
+                response_record.artifact_id
+            )
+        apply_record = self._artifacts.add(
+            PaperArtifactKind.APPLY_REPORT,
+            _apply_artifact_payload(
+                fast_step,
+                update_mode=self._plan.mechanisms.update_mode,
+            ),
+            parent_ids=(
+                input_skill_id,
+                update_record.artifact_id,
+                *rewrite_response_ids,
+            ),
+        )
+        candidate_record = self._artifacts.add(
+            PaperArtifactKind.SKILL,
+            {
+                "role": "candidate",
+                "skill_text": fast_step.apply_result.output_skill,
+                "skill_sha256": fast_step.apply_result.output_sha256,
+            },
+            parent_ids=(apply_record.artifact_id,),
+        )
+        carried_score = fast_step.skipped_stage is not None
+        score_record = self._artifacts.add(
+            PaperArtifactKind.SELECTION_SCORE,
+            {
+                "role": (
+                    "carried_current" if carried_score else "candidate"
+                ),
+                "score": fast_step.candidate_score.value,
+                "skill_sha256": fast_step.apply_result.output_sha256,
+            },
+            parent_ids=(
+                (
+                    candidate_record.artifact_id,
+                    self._require_artifact_head("current_score"),
+                )
+                if carried_score
+                else (candidate_record.artifact_id, registry_id)
+            ),
+        )
+        accepted = any(
+            event.event_type is AlgorithmEventType.CANDIDATE_ACCEPTED
+            for event in fast_step.events
+        )
+        self._record_fast_step_event_artifacts(
+            fast_step.events,
+            input_skill_id=input_skill_id,
+            input_score_id=input_score_id,
+            evidence_ids=tuple(evidence_ids),
+            response_ids=tuple(response_ids),
+            response_ids_by_call=response_ids_by_call,
+            update_id=update_record.artifact_id,
+            apply_id=apply_record.artifact_id,
+            candidate_id=candidate_record.artifact_id,
+            candidate_score_id=score_record.artifact_id,
+        )
+        if accepted:
+            self._artifact_heads["current_skill"] = candidate_record.artifact_id
+            self._artifact_heads["current_score"] = score_record.artifact_id
+
+    def _record_fast_step_event_artifacts(
+        self,
+        events: tuple[AlgorithmEvent, ...],
+        *,
+        input_skill_id: str,
+        input_score_id: str,
+        evidence_ids: tuple[str, ...],
+        response_ids: tuple[str, ...],
+        response_ids_by_call: Mapping[str, str],
+        update_id: str,
+        apply_id: str,
+        candidate_id: str,
+        candidate_score_id: str,
+    ) -> None:
+        optimizer_events = {
+            AlgorithmEventType.FAILURE_REFLECTED,
+            AlgorithmEventType.SUCCESS_REFLECTED,
+            AlgorithmEventType.ANALYST_REFINED,
+            AlgorithmEventType.MERGE_FAILURE,
+            AlgorithmEventType.MERGE_SUCCESS,
+            AlgorithmEventType.MERGE_FINAL_FAILURE_PRIORITIZED,
+            AlgorithmEventType.LEARNING_RATE_DECIDED,
+            AlgorithmEventType.RANK_TOP_L,
+        }
+        apply_events = {
+            AlgorithmEventType.PATCH_APPLIED,
+            AlgorithmEventType.REWRITE_APPLIED,
+            AlgorithmEventType.REWRITE_SKIPPED,
+        }
+        gate_events = {
+            AlgorithmEventType.SELECTION_SCORED,
+            AlgorithmEventType.CANDIDATE_ACCEPTED,
+            AlgorithmEventType.CANDIDATE_REJECTED,
+        }
+        for event in events:
+            contextual_parents: list[str] = [input_skill_id, input_score_id]
+            if event.event_type is AlgorithmEventType.ROLLOUT_COLLECTED:
+                accumulation_index = event.payload["accumulation_index"]
+                contextual_parents.append(evidence_ids[accumulation_index - 1])
+            elif event.event_type in optimizer_events:
+                call_id = event.payload.get("call_id")
+                if call_id is not None:
+                    response_id = response_ids_by_call.get(call_id)
+                    if response_id is None:
+                        raise RuntimeError(
+                            "optimizer event is missing its response artifact"
+                        )
+                    contextual_parents.append(response_id)
+                if event.event_type is AlgorithmEventType.RANK_TOP_L:
+                    contextual_parents.append(update_id)
+            elif event.event_type in apply_events:
+                contextual_parents.extend(
+                    (update_id, apply_id, candidate_id)
+                )
+            elif event.event_type in gate_events:
+                contextual_parents.extend((candidate_id, candidate_score_id))
+                if event.payload.get("reason") == "semantic_stage_exhausted":
+                    contextual_parents.extend(response_ids)
+            elif event.event_type is not AlgorithmEventType.STEP_STARTED:
+                raise RuntimeError("unexpected fast-step algorithm event")
+            self._record_event_artifact(event, tuple(contextual_parents))
+
+    def _record_event_artifacts(
+        self,
+        events: tuple[AlgorithmEvent, ...],
+        *,
+        additional_parent_ids: tuple[str, ...] = (),
+    ) -> None:
+        for event in events:
+            self._record_event_artifact(
+                event,
+                tuple(
+                    item
+                    for item in (
+                        self._artifact_heads.get("current_skill"),
+                        self._artifact_heads.get("current_score"),
+                        *additional_parent_ids,
+                    )
+                    if item is not None
+                ),
+            )
+
+    def _record_event_artifact(
+        self,
+        event: AlgorithmEvent,
+        contextual_parent_ids: tuple[str, ...],
+    ) -> None:
+        parent_ids = tuple(
+            dict.fromkeys(
+                item
+                for item in (
+                    self._artifact_heads.get("plan"),
+                    self._artifact_heads.get("last_event"),
+                    *contextual_parent_ids,
+                )
+                if item is not None
+            )
+        )
+        record = self._artifacts.add(
+            PaperArtifactKind.ALGORITHM_EVENT,
+            event.to_dict(),
+            parent_ids=parent_ids,
+        )
+        self._artifact_heads["last_event"] = record.artifact_id
+
+    def _require_artifact_head(self, name: str) -> str:
+        value = self._artifact_heads.get(name)
+        if type(value) is not str:
+            raise RuntimeError(f"paper artifact lineage is missing {name} head")
+        return value
+
     def checkpoint(
         self,
         authenticator: CheckpointAuthenticator,
@@ -493,7 +1045,7 @@ class PaperEpochLoop:
             raise ValueError("checkpoint requires exact authenticator")
         return authenticator.sign(
             {
-                "schema_version": "paper-epoch-runtime-v1",
+                "schema_version": "paper-epoch-runtime-v2",
                 "profile_sha256": canonical_json_sha256(
                     self._profile.to_dict()
                 ),
@@ -506,8 +1058,15 @@ class PaperEpochLoop:
                     record.to_checkpoint_dict() for record in self._epoch_buffer
                 ],
                 "epoch_snapshots": list(self._epoch_snapshots),
+                "epoch_snapshot_artifact_ids": list(
+                    self._epoch_snapshot_artifact_ids
+                ),
                 "events": [event.to_dict() for event in self._events],
                 "run_completed": self._run_completed,
+                "artifact_lineage": (
+                    self._artifacts.lineage.to_checkpoint_list()
+                ),
+                "artifact_heads": dict(self._artifact_heads),
             }
         )
 
@@ -537,12 +1096,15 @@ class PaperEpochLoop:
             "fast_loop",
             "epoch_buffer",
             "epoch_snapshots",
+            "epoch_snapshot_artifact_ids",
             "events",
             "run_completed",
+            "artifact_lineage",
+            "artifact_heads",
         }
         if type(payload) is not dict or set(payload) != expected:
             raise ValueError("invalid paper epoch runtime checkpoint")
-        if payload["schema_version"] != "paper-epoch-runtime-v1":
+        if payload["schema_version"] != "paper-epoch-runtime-v2":
             raise ValueError("unsupported paper epoch runtime checkpoint")
         identities = (
             payload["profile_sha256"]
@@ -575,6 +1137,31 @@ class PaperEpochLoop:
         ):
             raise ValueError("checkpoint completion state is inconsistent")
         self._run_completed = payload["run_completed"]
+        self._artifacts = PaperArtifactLedger.from_checkpoint_list(
+            payload["artifact_lineage"]
+        )
+        if type(payload["artifact_heads"]) is not dict or set(
+            payload["artifact_heads"]
+        ) != {
+            "profile",
+            "plan",
+            "registry",
+            "current_skill",
+            "current_score",
+            "meta_skill",
+            "last_event",
+        }:
+            raise ValueError("invalid artifact lineage checkpoint heads")
+        artifact_ids = {
+            record.artifact_id for record in self._artifacts.lineage.records
+        }
+        if any(
+            value is not None
+            and (type(value) is not str or value not in artifact_ids)
+            for value in payload["artifact_heads"].values()
+        ):
+            raise ValueError("artifact lineage checkpoint head is unknown")
+        self._artifact_heads = dict(payload["artifact_heads"])
         self._fast_loop._restore_authenticated_checkpoint(payload["fast_loop"])
         if type(payload["epoch_buffer"]) is not list:
             raise ValueError("invalid epoch buffer checkpoint payload")
@@ -598,9 +1185,57 @@ class PaperEpochLoop:
         expected_snapshots = state.epoch if self._run_completed else state.epoch - 1
         if len(self._epoch_snapshots) != expected_snapshots:
             raise ValueError("checkpoint snapshots disagree with current epoch")
+        if type(payload["epoch_snapshot_artifact_ids"]) is not list or any(
+            type(item) is not str or item not in artifact_ids
+            for item in payload["epoch_snapshot_artifact_ids"]
+        ):
+            raise ValueError("invalid epoch snapshot artifact IDs")
+        self._epoch_snapshot_artifact_ids = list(
+            payload["epoch_snapshot_artifact_ids"]
+        )
+        if len(self._epoch_snapshot_artifact_ids) != expected_snapshots:
+            raise ValueError("snapshot artifact IDs disagree with current epoch")
+        for skill_text, artifact_id in zip(
+            self._epoch_snapshots,
+            self._epoch_snapshot_artifact_ids,
+        ):
+            snapshot_record = next(
+                record
+                for record in self._artifacts.lineage.records
+                if record.artifact_id == artifact_id
+            )
+            if (
+                snapshot_record.kind is not PaperArtifactKind.SKILL
+                or snapshot_record.payload["skill_text"] != skill_text
+            ):
+                raise ValueError("epoch snapshot artifact is inconsistent")
         if type(payload["events"]) is not list:
             raise ValueError("invalid checkpoint event list")
         self._events = [AlgorithmEvent.from_dict(item) for item in payload["events"]]
+        records_by_id = {
+            record.artifact_id: record
+            for record in self._artifacts.lineage.records
+        }
+        skill_head = records_by_id[self._require_artifact_head("current_skill")]
+        score_head = records_by_id[self._require_artifact_head("current_score")]
+        artifact_events = self._artifacts.lineage.records_of_kind(
+            PaperArtifactKind.ALGORITHM_EVENT
+        )
+        if (
+            skill_head.kind is not PaperArtifactKind.SKILL
+            or skill_head.payload["skill_text"] != state.current_skill
+            or score_head.kind is not PaperArtifactKind.SELECTION_SCORE
+            or score_head.payload["score"] != state.current_score.value
+            or len(artifact_events) != len(self._events)
+            or [record.payload for record in artifact_events]
+            != [event.to_dict() for event in self._events]
+        ):
+            raise ValueError("artifact lineage checkpoint disagrees with runtime state")
+        meta_head = self._artifact_heads["meta_skill"]
+        if (state.meta_skill and meta_head is None) or (
+            not state.meta_skill and meta_head is not None
+        ):
+            raise ValueError("artifact lineage meta head disagrees with runtime")
         if [event.sequence for event in self._events] != list(
             range(len(self._events))
         ) or self._fast_loop.next_event_sequence != len(self._events):
@@ -623,3 +1258,151 @@ class PaperEpochLoop:
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _optimizer_stage_parent_ids(
+    request: OptimizerRequest,
+    *,
+    completed_exchanges: tuple[tuple[OptimizerRequest, str], ...],
+) -> tuple[str, ...]:
+    """Return response artifacts actually consumed by a later optimizer stage."""
+
+    by_call_id = {
+        completed.call_id: response_id
+        for completed, response_id in completed_exchanges
+    }
+    stage = request.stage
+    if stage is OptimizerStage.REFINE:
+        refine_prefix, separator, raw_round = request.call_id.rpartition("-r")
+        if not separator or not raw_round.isdigit():
+            raise RuntimeError("refine call ID cannot be linked to its input")
+        round_number = int(raw_round)
+        if round_number == 1:
+            dependency_call_id = refine_prefix.replace(
+                "-refine-",
+                "-reflect-",
+                1,
+            )
+        else:
+            dependency_call_id = f"{refine_prefix}-r{round_number - 1}"
+        response_id = by_call_id.get(dependency_call_id)
+        if response_id is None:
+            raise RuntimeError("refine lineage is missing its prior response")
+        return (response_id,)
+
+    if stage in {
+        OptimizerStage.MERGE_FAILURE,
+        OptimizerStage.MERGE_SUCCESS,
+    }:
+        source = (
+            "failure"
+            if stage is OptimizerStage.MERGE_FAILURE
+            else "success"
+        )
+        source_reflect_stage = (
+            OptimizerStage.REFLECT_FAILURE
+            if source == "failure"
+            else OptimizerStage.REFLECT_SUCCESS
+        )
+        return tuple(
+            response_id
+            for completed, response_id in completed_exchanges
+            if completed.stage in {source_reflect_stage, stage}
+            or (
+                completed.stage is OptimizerStage.REFINE
+                and f"-refine-{source}-" in completed.call_id
+            )
+        )
+
+    upstream_stages: set[OptimizerStage]
+    if stage is OptimizerStage.MERGE_FINAL_FAILURE_PRIORITIZED:
+        upstream_stages = {
+            OptimizerStage.MERGE_FAILURE,
+            OptimizerStage.MERGE_SUCCESS,
+            OptimizerStage.MERGE_FINAL_FAILURE_PRIORITIZED,
+        }
+    elif stage is OptimizerStage.DECIDE_LEARNING_RATE:
+        upstream_stages = {
+            OptimizerStage.MERGE_FINAL_FAILURE_PRIORITIZED,
+        }
+    elif stage is OptimizerStage.RANK_TOP_L:
+        upstream_stages = {
+            OptimizerStage.MERGE_FINAL_FAILURE_PRIORITIZED,
+            OptimizerStage.DECIDE_LEARNING_RATE,
+            OptimizerStage.RANK_TOP_L,
+        }
+    else:
+        return ()
+    return tuple(
+        response_id
+        for completed, response_id in completed_exchanges
+        if completed.stage in upstream_stages
+    )
+
+
+def _edit_artifact_payload(edit: PaperEdit) -> dict[str, Any]:
+    return {
+        "edit_id": edit.edit_id,
+        "operation": edit.operation.value,
+        "target": edit.target,
+        "content": edit.content,
+        "rationale": edit.rationale,
+        "support_count": edit.support_count,
+        "source_type": (
+            edit.source_type.value if edit.source_type is not None else None
+        ),
+    }
+
+
+def _suggestion_artifact_payload(
+    suggestion: PaperSuggestion,
+) -> dict[str, Any]:
+    return {
+        "suggestion_id": suggestion.suggestion_id,
+        "suggestion_type": suggestion.suggestion_type.value,
+        "title": suggestion.title,
+        "motivation": suggestion.motivation,
+        "instruction": suggestion.instruction,
+        "priority_hint": suggestion.priority_hint.value,
+        "support_count": suggestion.support_count,
+        "source_type": (
+            suggestion.source_type.value
+            if suggestion.source_type is not None
+            else None
+        ),
+    }
+
+
+def _apply_artifact_payload(
+    fast_step: FastStepResult,
+    *,
+    update_mode: str,
+) -> dict[str, Any]:
+    return {
+        "update_mode": update_mode,
+        "input_skill": fast_step.input_skill,
+        "input_sha256": fast_step.apply_result.input_sha256,
+        "output_skill": fast_step.apply_result.output_skill,
+        "output_sha256": fast_step.apply_result.output_sha256,
+        "reports": [
+            {
+                "index": report.index,
+                "edit_id": report.edit_id,
+                "operation": report.operation.value,
+                "status": report.status,
+                "before_sha256": report.before_sha256,
+                "after_sha256": report.after_sha256,
+            }
+            for report in fast_step.apply_result.reports
+        ],
+        "rewrite": (
+            {
+                "reasoning": fast_step.rewrite_result.reasoning,
+                "change_summary": list(
+                    fast_step.rewrite_result.change_summary
+                ),
+            }
+            if fast_step.rewrite_result is not None
+            else None
+        ),
+    }

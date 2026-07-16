@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import json
 import tempfile
+import threading
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -15,8 +17,10 @@ from textskill_optimizer.paper import (
     OptimizerRequest,
     OptimizerResponse,
     OptimizerStage,
+    PaperArtifactKind,
     PaperEpochLoop,
     PaperEpochPlan,
+    PaperMechanismSpec,
     load_paper_profile,
 )
 from textskill_optimizer.paper.responses import OptimizerContractViolation
@@ -171,6 +175,31 @@ class SlowMetaBackend(RejectedBufferBackend):
         return super().complete(request)
 
 
+class IdenticalCandidateSlowMetaBackend(EmptyEpochBackend):
+    def complete(self, request: OptimizerRequest) -> OptimizerResponse:
+        if request.stage is OptimizerStage.PROPOSE_SLOW_UPDATE:
+            self.requests.append(request)
+            return OptimizerResponse(
+                call_id=request.call_id,
+                payload={
+                    "reasoning": "keep the slow field stable",
+                    "slow_update_content": "- stable slow guidance",
+                },
+                model_id="identical-slow-meta-fake",
+            )
+        if request.stage is OptimizerStage.UPDATE_META_SKILL:
+            self.requests.append(request)
+            return OptimizerResponse(
+                call_id=request.call_id,
+                payload={
+                    "reasoning": "record optimizer context",
+                    "meta_skill_content": "stable optimizer context",
+                },
+                model_id="identical-slow-meta-fake",
+            )
+        return super().complete(request)
+
+
 class InvalidMetaBackend(SlowMetaBackend):
     def complete(self, request: OptimizerRequest) -> OptimizerResponse:
         if request.stage is OptimizerStage.UPDATE_META_SKILL:
@@ -187,6 +216,188 @@ class InvalidMetaBackend(SlowMetaBackend):
         return super().complete(request)
 
 
+class DelayedAnalystBackend(EmptyEpochBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._active = 0
+        self.max_active = 0
+
+    def complete(self, request: OptimizerRequest) -> OptimizerResponse:
+        if request.stage in {
+            OptimizerStage.REFLECT_FAILURE,
+            OptimizerStage.REFLECT_SUCCESS,
+        }:
+            with self._lock:
+                self._active += 1
+                self.max_active = max(self.max_active, self._active)
+            try:
+                batch_index = int(request.call_id.rsplit("b", 1)[1])
+                time.sleep(0.004 * (4 - batch_index))
+                return super().complete(request)
+            finally:
+                with self._lock:
+                    self._active -= 1
+        return super().complete(request)
+
+
+class FailingParallelBackend(DelayedAnalystBackend):
+    def complete(self, request: OptimizerRequest) -> OptimizerResponse:
+        if (
+            request.stage is OptimizerStage.REFLECT_FAILURE
+            and request.call_id.endswith("b2")
+        ):
+            time.sleep(0.004)
+            raise RuntimeError("parallel analyst failed")
+        return super().complete(request)
+
+
+class AutonomousLRBackend(RejectedBufferBackend):
+    def complete(self, request: OptimizerRequest) -> OptimizerResponse:
+        if request.stage is OptimizerStage.DECIDE_LEARNING_RATE:
+            self.requests.append(request)
+            return OptimizerResponse(
+                call_id=request.call_id,
+                payload={
+                    "learning_rate": 1,
+                    "reasoning": "one recurring failure dominates",
+                    "confidence": "high",
+                    "risk_notes": ["avoid unrelated edits"],
+                },
+                model_id="autonomous-lr-fake",
+            )
+        return super().complete(request)
+
+
+class RewriteBackend(EmptyEpochBackend):
+    def complete(self, request: OptimizerRequest) -> OptimizerResponse:
+        self.requests.append(request)
+        prompt = json.loads(request.prompt)
+        suggestion = {
+            "type": "clarify",
+            "title": "Verify results",
+            "motivation": "unverified results fail",
+            "instruction": "add a concise verification rule",
+            "priority_hint": "high",
+        }
+        if request.stage is OptimizerStage.REFLECT_FAILURE:
+            payload = {
+                "batch_size": len(prompt["trajectories"]),
+                "failure_summary": [
+                    {
+                        "failure_type": "verification",
+                        "count": 1,
+                        "description": "result was not verified",
+                    }
+                ],
+                "patch": {
+                    "reasoning": "verification is recurring",
+                    "revise_suggestions": [suggestion],
+                },
+            }
+        elif request.stage is OptimizerStage.REFLECT_SUCCESS:
+            payload = {
+                "batch_size": len(prompt["trajectories"]),
+                "success_patterns": [],
+                "patch": {"reasoning": "none", "revise_suggestions": []},
+            }
+        elif request.stage is OptimizerStage.REFINE:
+            payload = {
+                "reasoning": "suggestion is precise",
+                "revise_suggestions": [suggestion],
+                "converged": True,
+            }
+        elif request.stage in {
+            OptimizerStage.MERGE_FAILURE,
+            OptimizerStage.MERGE_SUCCESS,
+            OptimizerStage.MERGE_FINAL_FAILURE_PRIORITIZED,
+        }:
+            source = (
+                "success"
+                if request.stage is OptimizerStage.MERGE_SUCCESS
+                else "failure"
+            )
+            items = [] if source == "success" else [
+                {**suggestion, "support_count": 3, "source_type": source}
+            ]
+            payload = {
+                "reasoning": "keep the supported direction",
+                "revise_suggestions": items,
+            }
+        elif request.stage is OptimizerStage.RANK_TOP_L:
+            payload = {"reasoning": "highest impact", "selected_indices": [0]}
+        elif request.stage is OptimizerStage.REWRITE_SKILL:
+            slow_block = (
+                "<!-- SLOW_UPDATE_START -->\n"
+                "- durable slow rule\n"
+                "<!-- SLOW_UPDATE_END -->"
+            )
+            payload = {
+                "reasoning": "integrate the selected suggestion",
+                "change_summary": ["added verification"],
+                "new_skill": (
+                    "# Skill\n\n- accepted rule\n\n" + slow_block + "\n"
+                ),
+            }
+        else:
+            raise AssertionError(request.stage)
+        return OptimizerResponse(
+            call_id=request.call_id,
+            payload=payload,
+            model_id="rewrite-fake",
+        )
+
+
+class EmptyRewriteBackend(RewriteBackend):
+    def complete(self, request: OptimizerRequest) -> OptimizerResponse:
+        if request.stage is OptimizerStage.RANK_TOP_L:
+            self.requests.append(request)
+            return OptimizerResponse(
+                call_id=request.call_id,
+                payload={"reasoning": "no safe suggestion", "selected_indices": []},
+                model_id="empty-rewrite-fake",
+            )
+        return super().complete(request)
+
+
+class TamperingRewriteBackend(RewriteBackend):
+    def complete(self, request: OptimizerRequest) -> OptimizerResponse:
+        response = super().complete(request)
+        if request.stage is not OptimizerStage.REWRITE_SKILL:
+            return response
+        return OptimizerResponse(
+            call_id=request.call_id,
+            payload={
+                **response.payload,
+                "new_skill": (
+                    "# Skill\n\n- accepted rule\n\n"
+                    "<!-- SLOW_UPDATE_START -->\n"
+                    "- tampered slow rule\n"
+                    "<!-- SLOW_UPDATE_END -->\n"
+                ),
+            },
+            model_id=response.model_id,
+        )
+
+
+class RejectedRewriteBackend(RewriteBackend):
+    def complete(self, request: OptimizerRequest) -> OptimizerResponse:
+        response = super().complete(request)
+        if request.stage is not OptimizerStage.REWRITE_SKILL:
+            return response
+        return OptimizerResponse(
+            call_id=request.call_id,
+            payload={
+                **response.payload,
+                "new_skill": response.payload["new_skill"].replace(
+                    "- accepted rule",
+                    "- draft rule",
+                ),
+            },
+            model_id=response.model_id,
+        )
+
+
 class PaperEpochLoopTests(unittest.TestCase):
     def _build_loop(
         self,
@@ -197,6 +408,7 @@ class PaperEpochLoopTests(unittest.TestCase):
         longitudinal_fixture: bool = False,
         slow_selection_accept: bool = False,
         truncate_scheduled_batch: bool = False,
+        mechanisms: PaperMechanismSpec | None = None,
     ):
         profile = load_paper_profile()
         controller, train = build_runtime(
@@ -219,6 +431,7 @@ class PaperEpochLoopTests(unittest.TestCase):
                 "split_manifest"
             ).sha256,
             steps_per_epoch=steps_per_epoch,
+            mechanisms=mechanisms,
         )
         return (
             PaperEpochLoop(controller, profile=profile, plan=plan),
@@ -251,8 +464,8 @@ class PaperEpochLoopTests(unittest.TestCase):
             [event.event_type for event in loop.events[:2]],
             [AlgorithmEventType.RUN_STARTED, AlgorithmEventType.EPOCH_STARTED],
         )
-        signed_request = json.loads(first_evidence.canonical_request)
-        signed_payload = json.loads(first_evidence.canonical_payload)
+        signed_request = json.loads(first_evidence.batches[0].canonical_request)
+        signed_payload = json.loads(first_evidence.batches[0].canonical_payload)
         self.assertEqual(signed_request["batch_seed"], first.cursor.batch_seed)
         self.assertEqual(signed_request["batch_size"], 40)
         self.assertEqual(signed_payload["batch_seed"], first.cursor.batch_seed)
@@ -350,6 +563,440 @@ class PaperEpochLoopTests(unittest.TestCase):
 
             with self.assertRaisesRegex(DataFirewallViolation, "trajectory count"):
                 loop.collect_train_evidence()
+
+    def test_accumulation_reflects_separate_batches_into_one_gated_update(self) -> None:
+        backend = EmptyEpochBackend()
+        profile = load_paper_profile()
+        mechanisms = PaperMechanismSpec.for_mechanism_test(
+            profile,
+            accumulation=2,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, plan, _ = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+                mechanisms=mechanisms,
+            )
+            loop.initialize("# Skill\n")
+            evidence = loop.collect_train_evidence()
+            result = loop.run_step(train_evidence=evidence)
+
+        cursor = plan.cursor(epoch=1, step=1)
+        requests = [
+            json.loads(batch.canonical_request) for batch in evidence.batches
+        ]
+        self.assertEqual(len(evidence.batches), 2)
+        self.assertEqual(
+            [request["batch_id"] for request in requests],
+            [batch.batch_id for batch in cursor.batches],
+        )
+        reflected = [
+            request
+            for request in backend.requests
+            if request.stage
+            in {OptimizerStage.REFLECT_FAILURE, OptimizerStage.REFLECT_SUCCESS}
+        ]
+        self.assertEqual(
+            {request.metadata["accumulation_index"] for request in reflected},
+            {1, 2},
+        )
+        self.assertEqual(
+            sum(
+                event.event_type is AlgorithmEventType.ROLLOUT_COLLECTED
+                for event in result.fast_step.events
+            ),
+            2,
+        )
+        self.assertEqual(
+            sum(
+                event.event_type is AlgorithmEventType.SELECTION_SCORED
+                for event in result.fast_step.events
+            ),
+            1,
+        )
+
+    def test_parallel_analysts_commit_events_in_canonical_batch_order(self) -> None:
+        backend = DelayedAnalystBackend()
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, _, _ = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+            )
+            loop.initialize("# Skill\n")
+            result = loop.run_step(
+                train_evidence=loop.collect_train_evidence()
+            )
+
+        reflected = [
+            event
+            for event in result.fast_step.events
+            if event.event_type
+            in {
+                AlgorithmEventType.FAILURE_REFLECTED,
+                AlgorithmEventType.SUCCESS_REFLECTED,
+            }
+        ]
+        self.assertGreater(backend.max_active, 1)
+        self.assertEqual(
+            [event.payload["batch_index"] for event in reflected],
+            [1, 2, 3, 1, 2, 3],
+        )
+        self.assertEqual(
+            [event.sequence for event in result.fast_step.events],
+            list(
+                range(
+                    result.fast_step.events[0].sequence,
+                    result.fast_step.events[0].sequence
+                    + len(result.fast_step.events),
+                )
+            ),
+        )
+
+    def test_parallel_analyst_failure_cannot_partially_commit_step(self) -> None:
+        backend = FailingParallelBackend()
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, _, _ = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+            )
+            initialized = loop.initialize("# Skill\n")
+            before = (
+                loop.state,
+                loop.score_cache,
+                loop.events,
+                loop.epoch_buffer,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "parallel analyst failed"):
+                loop.run_step(train_evidence=loop.collect_train_evidence())
+
+        self.assertEqual(
+            (
+                loop.state,
+                loop.score_cache,
+                loop.events,
+                loop.epoch_buffer,
+            ),
+            before,
+        )
+        self.assertEqual(loop.state, initialized)
+
+    def test_autonomous_learning_rate_controls_top_l_after_merge(self) -> None:
+        backend = AutonomousLRBackend()
+        profile = load_paper_profile()
+        mechanisms = PaperMechanismSpec.for_mechanism_test(
+            profile,
+            learning_rate_schedule="autonomous",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, plan, _ = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+                mechanisms=mechanisms,
+            )
+            loop.initialize("# Skill\n")
+            result = loop.run_step(
+                train_evidence=loop.collect_train_evidence()
+            )
+
+        stages = [request.stage for request in backend.requests]
+        lr_index = stages.index(OptimizerStage.DECIDE_LEARNING_RATE)
+        rank_index = stages.index(OptimizerStage.RANK_TOP_L)
+        lr_request = backend.requests[lr_index]
+        rank_request = backend.requests[rank_index]
+        lr_event = next(
+            event
+            for event in result.fast_step.events
+            if event.event_type is AlgorithmEventType.LEARNING_RATE_DECIDED
+        )
+        self.assertEqual(plan.cursor(epoch=1, step=1).edit_budget, None)
+        self.assertLess(lr_index, rank_index)
+        self.assertEqual(json.loads(rank_request.prompt)["edit_budget"], 1)
+        self.assertEqual(lr_event.payload["learning_rate"], 1)
+        self.assertEqual(
+            json.loads(lr_request.prompt)["candidate_count"],
+            1,
+        )
+
+    def test_rewrite_mode_gates_full_skill_and_preserves_slow_field(self) -> None:
+        backend = RewriteBackend()
+        profile = load_paper_profile()
+        mechanisms = PaperMechanismSpec.for_mechanism_test(
+            profile,
+            update_mode="rewrite_from_suggestions",
+        )
+        initial_skill = (
+            "# Skill\n\n"
+            "<!-- SLOW_UPDATE_START -->\n"
+            "- durable slow rule\n"
+            "<!-- SLOW_UPDATE_END -->\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, _, _ = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+                mechanisms=mechanisms,
+            )
+            loop.initialize(initial_skill)
+            result = loop.run_step(
+                train_evidence=loop.collect_train_evidence()
+            )
+
+        self.assertIn(OptimizerStage.REWRITE_SKILL, [
+            request.stage for request in backend.requests
+        ])
+        self.assertEqual(result.fast_step.ranked_edits, ())
+        self.assertEqual(len(result.fast_step.ranked_suggestions), 1)
+        self.assertIsNotNone(result.fast_step.rewrite_result)
+        self.assertIn("- accepted rule", result.state.current_skill)
+        self.assertIn("- durable slow rule", result.state.current_skill)
+        self.assertEqual(result.state.current_score.value, 0.8)
+        self.assertEqual(result.fast_step.replay(), result.fast_step.apply_result)
+
+    def test_skipped_rewrite_lineage_retains_planned_update_mode(self) -> None:
+        backend = EmptyRewriteBackend()
+        profile = load_paper_profile()
+        mechanisms = PaperMechanismSpec.for_mechanism_test(
+            profile,
+            update_mode="rewrite_from_suggestions",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, _, _ = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+                mechanisms=mechanisms,
+            )
+            loop.initialize("# Skill\n")
+            result = loop.run_step(
+                train_evidence=loop.collect_train_evidence()
+            )
+
+        apply_record = loop.artifact_lineage.records_of_kind(
+            PaperArtifactKind.APPLY_REPORT
+        )[-1]
+        self.assertIn(
+            AlgorithmEventType.REWRITE_SKIPPED,
+            [event.event_type for event in result.fast_step.events],
+        )
+        self.assertNotIn(
+            OptimizerStage.REWRITE_SKILL,
+            [request.stage for request in backend.requests],
+        )
+        self.assertEqual(
+            apply_record.payload["update_mode"],
+            "rewrite_from_suggestions",
+        )
+
+    def test_artifact_lineage_covers_step_and_survives_checkpoint(self) -> None:
+        backend = RejectedBufferBackend()
+        authenticator = CheckpointAuthenticator(
+            key_id="artifact-lineage-key",
+            secret_key=b"l" * 32,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, plan, controller = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+            )
+            loop.initialize("# Skill\n")
+            result = loop.run_step(
+                train_evidence=loop.collect_train_evidence()
+            )
+            lineage = loop.artifact_lineage
+            lineage.verify()
+            checkpoint = loop.checkpoint(authenticator)
+            resumed = PaperEpochLoop.resume(
+                controller,
+                profile=load_paper_profile(),
+                plan=plan,
+                checkpoint=checkpoint,
+                authenticator=authenticator,
+            )
+
+        kinds = {record.kind for record in lineage.records}
+        self.assertTrue(
+            {
+                PaperArtifactKind.PROFILE,
+                PaperArtifactKind.EPOCH_PLAN,
+                PaperArtifactKind.CONTROLLER_REGISTRY,
+                PaperArtifactKind.SKILL,
+                PaperArtifactKind.SELECTION_SCORE,
+                PaperArtifactKind.TRAIN_EVIDENCE,
+                PaperArtifactKind.OPTIMIZER_REQUEST,
+                PaperArtifactKind.OPTIMIZER_RESPONSE,
+                PaperArtifactKind.UPDATE_SET,
+                PaperArtifactKind.APPLY_REPORT,
+                PaperArtifactKind.ALGORITHM_EVENT,
+            }.issubset(kinds)
+        )
+        self.assertEqual(
+            len(lineage.records_of_kind(PaperArtifactKind.OPTIMIZER_RESPONSE)),
+            len(backend.requests),
+        )
+        candidate = lineage.records_of_kind(PaperArtifactKind.SKILL)[-1]
+        self.assertEqual(candidate.payload["skill_text"], result.fast_step.apply_result.output_skill)
+        self.assertEqual(resumed.artifact_lineage, lineage)
+
+        records_by_id = {
+            record.artifact_id: record for record in lineage.records
+        }
+        event_records = lineage.records_of_kind(
+            PaperArtifactKind.ALGORITHM_EVENT
+        )
+        step_started = next(
+            record
+            for record in event_records
+            if record.payload["event_type"] == AlgorithmEventType.STEP_STARTED.value
+        )
+        rollout = next(
+            record
+            for record in event_records
+            if record.payload["event_type"]
+            == AlgorithmEventType.ROLLOUT_COLLECTED.value
+        )
+        reflected = next(
+            record
+            for record in event_records
+            if record.payload["event_type"]
+            == AlgorithmEventType.FAILURE_REFLECTED.value
+        )
+        forbidden_early_kinds = {
+            PaperArtifactKind.UPDATE_SET,
+            PaperArtifactKind.APPLY_REPORT,
+        }
+        self.assertTrue(
+            forbidden_early_kinds.isdisjoint(
+                records_by_id[parent_id].kind
+                for parent_id in step_started.parent_ids
+            )
+        )
+        self.assertTrue(
+            any(
+                records_by_id[parent_id].kind is PaperArtifactKind.TRAIN_EVIDENCE
+                for parent_id in rollout.parent_ids
+            )
+        )
+        self.assertTrue(
+            any(
+                records_by_id[parent_id].kind
+                is PaperArtifactKind.OPTIMIZER_RESPONSE
+                and records_by_id[parent_id].payload["call_id"]
+                == reflected.payload["payload"]["call_id"]
+                for parent_id in reflected.parent_ids
+            )
+        )
+        reflected_response = next(
+            record
+            for record in lineage.records_of_kind(
+                PaperArtifactKind.OPTIMIZER_RESPONSE
+            )
+            if record.payload["call_id"]
+            == reflected.payload["payload"]["call_id"]
+        )
+        update_record = lineage.records_of_kind(PaperArtifactKind.UPDATE_SET)[-1]
+        ancestor_ids: set[str] = set()
+        pending = list(update_record.parent_ids)
+        while pending:
+            artifact_id = pending.pop()
+            if artifact_id in ancestor_ids:
+                continue
+            ancestor_ids.add(artifact_id)
+            pending.extend(records_by_id[artifact_id].parent_ids)
+        self.assertIn(reflected_response.artifact_id, ancestor_ids)
+
+    def test_rewrite_cannot_modify_slow_field_or_partially_commit(self) -> None:
+        backend = TamperingRewriteBackend()
+        profile = load_paper_profile()
+        mechanisms = PaperMechanismSpec.for_mechanism_test(
+            profile,
+            update_mode="rewrite_from_suggestions",
+        )
+        initial_skill = (
+            "# Skill\n\n"
+            "<!-- SLOW_UPDATE_START -->\n"
+            "- durable slow rule\n"
+            "<!-- SLOW_UPDATE_END -->\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, _, _ = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+                mechanisms=mechanisms,
+            )
+            loop.initialize(initial_skill)
+            before = (
+                loop.state,
+                loop.score_cache,
+                loop.events,
+                loop.epoch_buffer,
+                loop.artifact_lineage,
+            )
+
+            with self.assertRaisesRegex(
+                OptimizerContractViolation,
+                "protected slow-update field",
+            ):
+                loop.run_step(train_evidence=loop.collect_train_evidence())
+
+        self.assertEqual(
+            (
+                loop.state,
+                loop.score_cache,
+                loop.events,
+                loop.epoch_buffer,
+                loop.artifact_lineage,
+            ),
+            before,
+        )
+
+    def test_rejected_rewrite_suggestions_enter_epoch_buffer_and_checkpoint(self) -> None:
+        backend = RejectedRewriteBackend()
+        profile = load_paper_profile()
+        mechanisms = PaperMechanismSpec.for_mechanism_test(
+            profile,
+            update_mode="rewrite_from_suggestions",
+        )
+        authenticator = CheckpointAuthenticator(
+            key_id="rewrite-buffer-key",
+            secret_key=b"r" * 32,
+        )
+        initial_skill = (
+            "# Skill\n\n"
+            "<!-- SLOW_UPDATE_START -->\n"
+            "- durable slow rule\n"
+            "<!-- SLOW_UPDATE_END -->\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, plan, controller = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+                mechanisms=mechanisms,
+            )
+            initialized = loop.initialize(initial_skill)
+            result = loop.run_step(
+                train_evidence=loop.collect_train_evidence()
+            )
+            resumed = PaperEpochLoop.resume(
+                controller,
+                profile=profile,
+                plan=plan,
+                checkpoint=loop.checkpoint(authenticator),
+                authenticator=authenticator,
+            )
+
+        self.assertEqual(result.state.current_skill, initialized.current_skill)
+        self.assertEqual(loop.epoch_buffer[0].rejected_edits, ())
+        self.assertEqual(len(loop.epoch_buffer[0].rejected_suggestions), 1)
+        self.assertEqual(resumed.epoch_buffer, loop.epoch_buffer)
 
     def test_epoch_one_skips_slow_meta_and_clears_buffer_before_epoch_two(self) -> None:
         backend = RejectedBufferBackend()
@@ -465,9 +1112,10 @@ class PaperEpochLoopTests(unittest.TestCase):
         self.assertEqual(resumed.epoch_snapshots, continuous.epoch_snapshots)
         self.assertEqual(resumed.events, continuous.events)
         self.assertEqual(
-            [request.call_id for request in backend.requests],
-            expected_requests,
+            sorted(request.call_id for request in backend.requests),
+            sorted(expected_requests),
         )
+        self.assertEqual(resumed.artifact_lineage, continuous.artifact_lineage)
 
     def test_resume_after_slow_meta_matches_continuing_epoch_three(self) -> None:
         backend = SlowMetaBackend()
@@ -500,6 +1148,7 @@ class PaperEpochLoopTests(unittest.TestCase):
                 loop.epoch_buffer,
                 loop.epoch_snapshots,
                 loop.events,
+                loop.artifact_lineage,
             )
 
             backend.requests.clear()
@@ -519,12 +1168,13 @@ class PaperEpochLoopTests(unittest.TestCase):
                 resumed.epoch_buffer,
                 resumed.epoch_snapshots,
                 resumed.events,
+                resumed.artifact_lineage,
             ),
             expected,
         )
         self.assertEqual(
-            [request.call_id for request in backend.requests],
-            expected_requests,
+            sorted(request.call_id for request in backend.requests),
+            sorted(expected_requests),
         )
         self.assertEqual(resumed.state.meta_skill, SlowMetaBackend.META_TOKEN)
 
@@ -576,6 +1226,49 @@ class PaperEpochLoopTests(unittest.TestCase):
         self.assertNotIn(SlowMetaBackend.META_TOKEN, completion.state.current_skill)
         self.assertNotIn(SlowMetaBackend.META_TOKEN, completion.state.best_skill)
         self.assertEqual(completion.state.meta_skill, SlowMetaBackend.META_TOKEN)
+        lineage = loop.artifact_lineage
+        slow_candidate = next(
+            record
+            for record in lineage.records_of_kind(PaperArtifactKind.SKILL)
+            if record.payload["role"] == "slow_candidate"
+        )
+        slow_score = next(
+            record
+            for record in lineage.records_of_kind(
+                PaperArtifactKind.SELECTION_SCORE
+            )
+            if record.payload["role"] == "slow_candidate"
+        )
+        meta_record = lineage.records_of_kind(PaperArtifactKind.META_SKILL)[-1]
+        rejected_event = next(
+            event
+            for event in completion.events
+            if event.event_type is AlgorithmEventType.CANDIDATE_REJECTED
+        )
+        meta_event = next(
+            event
+            for event in completion.events
+            if event.event_type is AlgorithmEventType.META_UPDATE_COMPLETED
+        )
+        event_records = lineage.records_of_kind(
+            PaperArtifactKind.ALGORITHM_EVENT
+        )
+        rejected_event_record = next(
+            record
+            for record in event_records
+            if record.payload["sequence"] == rejected_event.sequence
+        )
+        meta_event_record = next(
+            record
+            for record in event_records
+            if record.payload["sequence"] == meta_event.sequence
+        )
+        self.assertTrue(
+            {slow_candidate.artifact_id, slow_score.artifact_id}.issubset(
+                rejected_event_record.parent_ids
+            )
+        )
+        self.assertIn(meta_record.artifact_id, meta_event_record.parent_ids)
         future_fast_requests = [
             request
             for request in backend.requests[epoch_three_request_start:]
@@ -591,6 +1284,49 @@ class PaperEpochLoopTests(unittest.TestCase):
                 json.loads(request.prompt)["meta_skill"]
                 == SlowMetaBackend.META_TOKEN
                 for request in future_fast_requests
+            )
+        )
+
+    def test_longitudinal_lineage_uses_committed_snapshot_identity(self) -> None:
+        backend = IdenticalCandidateSlowMetaBackend()
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, _, _, _ = self._build_loop(
+                Path(tmp),
+                backend,
+                steps_per_epoch=1,
+                longitudinal_fixture=True,
+            )
+            loop.initialize("# Skill\n")
+            loop.run_step(train_evidence=loop.collect_train_evidence())
+            loop.finish_epoch()
+            loop.run_step(train_evidence=loop.collect_train_evidence())
+            loop.finish_epoch(
+                longitudinal_evidence=loop.collect_longitudinal_evidence()
+            )
+
+        lineage = loop.artifact_lineage
+        skill_records = lineage.records_of_kind(PaperArtifactKind.SKILL)
+        initial = next(
+            record for record in skill_records if record.payload["role"] == "initial"
+        )
+        identical_candidates = [
+            record
+            for record in skill_records
+            if record.payload["role"] == "candidate"
+            and record.payload["skill_text"] == initial.payload["skill_text"]
+        ]
+        previous_evidence = next(
+            record
+            for record in lineage.records_of_kind(
+                PaperArtifactKind.LONGITUDINAL_EVIDENCE
+            )
+            if record.payload["role"] == "previous"
+        )
+        self.assertTrue(identical_candidates)
+        self.assertIn(initial.artifact_id, previous_evidence.parent_ids)
+        self.assertTrue(
+            {record.artifact_id for record in identical_candidates}.isdisjoint(
+                previous_evidence.parent_ids
             )
         )
 

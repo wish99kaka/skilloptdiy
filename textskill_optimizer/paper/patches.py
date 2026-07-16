@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from .types import PaperEdit, PaperEditOperation
+from .types import PaperEdit, PaperEditOperation, PaperSuggestion
 
 
 SLOW_UPDATE_START = "<!-- SLOW_UPDATE_START -->"
@@ -28,6 +28,54 @@ class PatchApplyResult:
     output_skill: str
     output_sha256: str
     reports: tuple[EditApplyReport, ...]
+
+
+@dataclass(frozen=True)
+class RewriteApplyResult:
+    input_sha256: str
+    output_skill: str
+    output_sha256: str
+    suggestions: tuple[PaperSuggestion, ...]
+    reasoning: str
+    change_summary: tuple[str, ...]
+    reports: tuple[EditApplyReport, ...] = ()
+
+
+def apply_paper_rewrite(
+    skill_text: str,
+    suggestions: tuple[PaperSuggestion, ...],
+    *,
+    new_skill: str,
+    reasoning: str,
+    change_summary: tuple[str, ...],
+) -> RewriteApplyResult:
+    """Validate one full rewrite and preserve the protected slow field exactly."""
+
+    if type(skill_text) is not str or not skill_text.strip():
+        raise ValueError("paper rewrite requires skill_text")
+    if type(suggestions) is not tuple or not suggestions or any(
+        type(item) is not PaperSuggestion for item in suggestions
+    ):
+        raise ValueError("paper rewrite requires selected suggestions")
+    if type(new_skill) is not str or not new_skill.strip():
+        raise ValueError("paper rewrite requires a complete new skill")
+    if type(reasoning) is not str or not reasoning.strip():
+        raise ValueError("paper rewrite requires reasoning")
+    if type(change_summary) is not tuple or any(
+        type(item) is not str or not item.strip() for item in change_summary
+    ):
+        raise ValueError("paper rewrite change summary must contain text")
+    if _slow_update_block(skill_text) != _slow_update_block(new_skill):
+        raise ValueError("paper rewrite cannot modify the protected slow-update field")
+    output_skill = new_skill.rstrip() + "\n"
+    return RewriteApplyResult(
+        input_sha256=_sha256(skill_text),
+        output_skill=output_skill,
+        output_sha256=_sha256(output_skill),
+        suggestions=suggestions,
+        reasoning=reasoning,
+        change_summary=change_summary,
+    )
 
 
 def apply_paper_patch(
@@ -215,3 +263,15 @@ def _protected_ranges(skill_text: str) -> tuple[tuple[int, int], ...]:
 
 def _strip_slow_markers(value: str) -> str:
     return value.replace(SLOW_UPDATE_START, "").replace(SLOW_UPDATE_END, "")
+
+
+def _slow_update_block(skill_text: str) -> str | None:
+    start_count = skill_text.count(SLOW_UPDATE_START)
+    end_count = skill_text.count(SLOW_UPDATE_END)
+    if start_count == 0 and end_count == 0:
+        return None
+    if start_count != 1 or end_count != 1:
+        raise ValueError("skill must contain exactly one complete slow-update field")
+    start = skill_text.index(SLOW_UPDATE_START)
+    end = skill_text.index(SLOW_UPDATE_END, start) + len(SLOW_UPDATE_END)
+    return skill_text[start:end]

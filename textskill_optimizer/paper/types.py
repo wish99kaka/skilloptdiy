@@ -24,8 +24,11 @@ class AlgorithmEventType(str, Enum):
     MERGE_FAILURE = "merge_failure"
     MERGE_SUCCESS = "merge_success"
     MERGE_FINAL_FAILURE_PRIORITIZED = "merge_final_failure_prioritized"
+    LEARNING_RATE_DECIDED = "learning_rate_decided"
     RANK_TOP_L = "rank_top_l"
     PATCH_APPLIED = "patch_applied"
+    REWRITE_APPLIED = "rewrite_applied"
+    REWRITE_SKIPPED = "rewrite_skipped"
     SELECTION_SCORED = "selection_scored"
     CANDIDATE_ACCEPTED = "candidate_accepted"
     CANDIDATE_REJECTED = "candidate_rejected"
@@ -47,6 +50,21 @@ class PaperEditOperation(str, Enum):
 class PaperEditSource(str, Enum):
     FAILURE = "failure"
     SUCCESS = "success"
+
+
+class PaperSuggestionType(str, Enum):
+    ADD_RULE = "add_rule"
+    REMOVE_RULE = "remove_rule"
+    MERGE_RULES = "merge_rules"
+    REORGANIZE = "reorganize"
+    COMPRESS = "compress"
+    CLARIFY = "clarify"
+
+
+class PaperSuggestionPriority(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
 
 
 @dataclass(frozen=True)
@@ -116,6 +134,37 @@ class PaperEdit:
 
 
 @dataclass(frozen=True)
+class PaperSuggestion:
+    suggestion_id: str
+    suggestion_type: PaperSuggestionType
+    title: str
+    motivation: str
+    instruction: str
+    priority_hint: PaperSuggestionPriority
+    support_count: int = 1
+    source_type: PaperEditSource | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.suggestion_id) is not str or not self.suggestion_id.strip():
+            raise ValueError("paper suggestion requires suggestion_id")
+        if type(self.suggestion_type) is not PaperSuggestionType:
+            raise ValueError("paper suggestion requires an exact suggestion type")
+        if type(self.priority_hint) is not PaperSuggestionPriority:
+            raise ValueError("paper suggestion requires an exact priority")
+        if any(
+            type(value) is not str or not value.strip()
+            for value in (self.title, self.motivation, self.instruction)
+        ):
+            raise ValueError("paper suggestion text fields require content")
+        if type(self.support_count) is not int or self.support_count < 1:
+            raise ValueError("paper suggestion support_count must be >= 1")
+        if self.source_type is not None and type(
+            self.source_type
+        ) is not PaperEditSource:
+            raise ValueError("paper suggestion source_type must be failure or success")
+
+
+@dataclass(frozen=True)
 class EpochBufferRecord:
     """Train-derived step evidence plus rejected scalar-gate feedback."""
 
@@ -124,6 +173,7 @@ class EpochBufferRecord:
     failure_patterns: tuple[ObservedFailurePattern, ...]
     rejected_edits: tuple[PaperEdit, ...]
     score_delta: float | None
+    rejected_suggestions: tuple[PaperSuggestion, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.epoch) is not int or self.epoch < 1:
@@ -139,7 +189,14 @@ class EpochBufferRecord:
             type(item) is not PaperEdit for item in self.rejected_edits
         ):
             raise ValueError("epoch buffer requires exact rejected edits")
-        if self.rejected_edits:
+        if type(self.rejected_suggestions) is not tuple or any(
+            type(item) is not PaperSuggestion
+            for item in self.rejected_suggestions
+        ):
+            raise ValueError("epoch buffer requires exact rejected suggestions")
+        if self.rejected_edits and self.rejected_suggestions:
+            raise ValueError("epoch buffer cannot mix rejected update modes")
+        if self.rejected_edits or self.rejected_suggestions:
             if (
                 type(self.score_delta) is not float
                 or not math.isfinite(self.score_delta)
@@ -173,6 +230,9 @@ class EpochBufferRecord:
                 }
                 for edit in self.rejected_edits
             ],
+            "rejected_suggestions": [
+                _suggestion_dict(item) for item in self.rejected_suggestions
+            ],
             "score_delta": self.score_delta,
         }
 
@@ -199,6 +259,9 @@ class EpochBufferRecord:
                 }
                 for edit in self.rejected_edits
             ],
+            "rejected_suggestions": [
+                _suggestion_dict(item) for item in self.rejected_suggestions
+            ],
             "score_delta": self.score_delta,
         }
 
@@ -212,6 +275,7 @@ class EpochBufferRecord:
             "step",
             "failure_patterns",
             "rejected_edits",
+            "rejected_suggestions",
             "score_delta",
         }
         if type(payload) is not dict or set(payload) != expected:
@@ -220,6 +284,8 @@ class EpochBufferRecord:
             payload["rejected_edits"]
         ) is not list:
             raise ValueError("invalid epoch buffer checkpoint lists")
+        if type(payload["rejected_suggestions"]) is not list:
+            raise ValueError("invalid checkpoint rejected suggestions")
         patterns: list[ObservedFailurePattern] = []
         for item in payload["failure_patterns"]:
             if type(item) is not dict or set(item) != {
@@ -265,7 +331,55 @@ class EpochBufferRecord:
             failure_patterns=tuple(patterns),
             rejected_edits=tuple(edits),
             score_delta=score_delta,
+            rejected_suggestions=tuple(
+                _suggestion_from_mapping(item)
+                for item in payload["rejected_suggestions"]
+            ),
         )
+
+
+def _suggestion_dict(item: PaperSuggestion) -> dict[str, Any]:
+    return {
+        "suggestion_id": item.suggestion_id,
+        "suggestion_type": item.suggestion_type.value,
+        "title": item.title,
+        "motivation": item.motivation,
+        "instruction": item.instruction,
+        "priority_hint": item.priority_hint.value,
+        "support_count": item.support_count,
+        "source_type": (
+            item.source_type.value if item.source_type is not None else None
+        ),
+    }
+
+
+def _suggestion_from_mapping(payload: Mapping[str, Any]) -> PaperSuggestion:
+    expected = {
+        "suggestion_id",
+        "suggestion_type",
+        "title",
+        "motivation",
+        "instruction",
+        "priority_hint",
+        "support_count",
+        "source_type",
+    }
+    if type(payload) is not dict or set(payload) != expected:
+        raise ValueError("invalid checkpoint rejected suggestion")
+    return PaperSuggestion(
+        suggestion_id=payload["suggestion_id"],
+        suggestion_type=PaperSuggestionType(payload["suggestion_type"]),
+        title=payload["title"],
+        motivation=payload["motivation"],
+        instruction=payload["instruction"],
+        priority_hint=PaperSuggestionPriority(payload["priority_hint"]),
+        support_count=payload["support_count"],
+        source_type=(
+            PaperEditSource(payload["source_type"])
+            if payload["source_type"] is not None
+            else None
+        ),
+    )
 
 
 @dataclass(frozen=True)

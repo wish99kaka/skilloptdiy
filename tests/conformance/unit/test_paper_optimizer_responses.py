@@ -1,17 +1,122 @@
 import unittest
 
-from textskill_optimizer.paper import OptimizerStage, PaperEdit, PaperEditOperation
+from textskill_optimizer.paper import (
+    OptimizerStage,
+    PaperEdit,
+    PaperEditOperation,
+)
 from textskill_optimizer.paper.responses import (
     OptimizerContractViolation,
     epoch_response_schema,
+    learning_rate_response_schema,
     optimizer_response_schema,
     parse_epoch_response,
+    parse_learning_rate_response,
     parse_patch_response,
     parse_rank_response,
+    parse_rewrite_response,
+    parse_suggestion_rank_response,
+    parse_suggestion_response,
 )
 
 
 class PaperOptimizerResponseTests(unittest.TestCase):
+    def test_rewrite_suggestion_and_full_skill_contracts_are_strict(self) -> None:
+        suggestion = {
+            "type": "clarify",
+            "title": "Verify",
+            "motivation": "results are unchecked",
+            "instruction": "add a verification rule",
+            "priority_hint": "high",
+        }
+        parsed = parse_suggestion_response(
+            stage=OptimizerStage.REFLECT_FAILURE,
+            payload={
+                "batch_size": 2,
+                "failure_summary": [
+                    {
+                        "failure_type": "verification",
+                        "count": 2,
+                        "description": "results were unchecked",
+                    }
+                ],
+                "patch": {
+                    "reasoning": "recurring failure",
+                    "revise_suggestions": [suggestion],
+                },
+            },
+            edit_budget=2,
+            suggestion_id_prefix="rewrite",
+            expected_batch_size=2,
+        )
+        ranked = parse_suggestion_rank_response(
+            payload={"reasoning": "highest impact", "selected_indices": [0]},
+            candidates=parsed.suggestions,
+            edit_budget=1,
+        )
+        rewrite = parse_rewrite_response(
+            {
+                "reasoning": "integrated",
+                "change_summary": ["added verification"],
+                "new_skill": "# Skill\n",
+            }
+        )
+
+        self.assertEqual(ranked, parsed.suggestions)
+        self.assertEqual(rewrite.new_skill, "# Skill\n")
+        with self.assertRaises(OptimizerContractViolation):
+            parse_rewrite_response(
+                {
+                    "reasoning": "integrated",
+                    "change_summary": ["added verification"],
+                    "new_skill": "# Skill\n",
+                    "selection_score": 1.0,
+                }
+            )
+        with self.assertRaises(OptimizerContractViolation):
+            parse_suggestion_response(
+                stage=OptimizerStage.REFLECT_FAILURE,
+                payload={
+                    "batch_size": 2,
+                    "failure_summary": [],
+                    "patch": {
+                        "reasoning": "bad",
+                        "revise_suggestions": [
+                            {**suggestion, "instruction": "   "}
+                        ],
+                    },
+                },
+                edit_budget=2,
+                suggestion_id_prefix="rewrite",
+                expected_batch_size=2,
+            )
+
+    def test_autonomous_learning_rate_is_strict_and_clamped_to_candidates(self) -> None:
+        payload = {
+            "learning_rate": 9,
+            "reasoning": "several independent changes are justified",
+            "confidence": "medium",
+            "risk_notes": ["rewrite breadth"],
+        }
+        parsed = parse_learning_rate_response(
+            payload=payload,
+            candidate_count=3,
+        )
+
+        self.assertEqual(parsed.raw_learning_rate, 9)
+        self.assertEqual(parsed.learning_rate, 3)
+        self.assertEqual(parsed.response_schema, learning_rate_response_schema())
+        with self.assertRaises(OptimizerContractViolation):
+            parse_learning_rate_response(
+                payload={**payload, "selection_diagnostics": {}},
+                candidate_count=3,
+            )
+        with self.assertRaises(OptimizerContractViolation):
+            parse_learning_rate_response(
+                payload={**payload, "reasoning": "   "},
+                candidate_count=3,
+            )
+
     def test_slow_and_meta_text_contracts_are_strict(self) -> None:
         cases = (
             (

@@ -314,8 +314,8 @@ in Section 13 are the only executable plan; this table is only a status index.
 | 3. Patch fast core | Completed | M3 / WP2 |
 | 4. Epoch state | Completed | M4 / WP3 |
 | 5. Slow/meta | Completed | M4 / WP3 |
-| 6. Mechanism completeness | Next | M5 / WP3 |
-| 7. Zero-cost conformance | Pending | WP4 |
+| 6. Mechanism completeness | Completed | M5 / WP3 |
+| 7. Zero-cost conformance | Next | WP4 |
 | 8–11. Development evidence | Blocked by Phase 7 | WP5 |
 | 12–13. Held-out evidence and breadth | Blocked by Phase 11 | WP6 |
 
@@ -587,8 +587,7 @@ ranked patch, and apply report.
 
 #### WP3 — Implement epoch state and remaining mechanisms
 
-Status: in progress; M4 items 1–4 completed on 2026-07-16, M5 item 5
-pending. Dependencies: WP2.
+Status: completed on 2026-07-16. Dependencies: WP2.
 
 1. Implement epoch-local rejected-step buffers and deterministic data plans.
 2. Implement checkpoints whose resumed event/artifact sequence matches an

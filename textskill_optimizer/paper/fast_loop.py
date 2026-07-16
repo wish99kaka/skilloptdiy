@@ -4,23 +4,44 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from .backend import OptimizerRequest, OptimizerResponse, OptimizerStage
+from .artifacts import OptimizerExchange
 from .config import PaperProfile
-from .data import SelectionScore, TrainEvidenceBatch, strict_selection_decision
+from .data import (
+    SelectionScore,
+    StepTrainEvidence,
+    TrainEvidenceBatch,
+    strict_selection_decision,
+)
+from .epoch_plan import EpochBatchCursor, PaperMechanismSpec
 from .optimization import PaperOptimizationController
-from .patches import PatchApplyResult, apply_paper_patch
+from .patches import (
+    PatchApplyResult,
+    RewriteApplyResult,
+    apply_paper_patch,
+    apply_paper_rewrite,
+)
 from .prompts import load_optimizer_prompt
 from .provenance import canonical_json_sha256
 from .responses import (
     OptimizerContractViolation,
     ParsedPatchResponse,
+    ParsedSuggestionResponse,
+    learning_rate_response_schema,
     optimizer_response_schema,
+    parse_learning_rate_response,
     parse_patch_response,
     parse_rank_response,
+    parse_rewrite_response,
+    parse_suggestion_rank_response,
+    parse_suggestion_response,
+    rewrite_response_schema,
 )
 from .types import (
     AlgorithmEvent,
@@ -29,6 +50,7 @@ from .types import (
     ObservedFailurePattern,
     PaperEdit,
     PaperEditSource,
+    PaperSuggestion,
     PaperState,
 )
 
@@ -63,6 +85,9 @@ class _SemanticStageExhausted(RuntimeError):
         self.attempts = attempts
 
 
+ParsedUpdateResponse = ParsedPatchResponse | ParsedSuggestionResponse
+
+
 @dataclass(frozen=True)
 class FastStepResult:
     """Complete state transition and reconstruction inputs for one fast step."""
@@ -71,13 +96,28 @@ class FastStepResult:
     state: PaperState
     candidate_score: SelectionScore
     ranked_edits: tuple[PaperEdit, ...]
-    apply_result: PatchApplyResult
+    apply_result: PatchApplyResult | RewriteApplyResult
     events: tuple[AlgorithmEvent, ...]
     failure_patterns: tuple[ObservedFailurePattern, ...] = ()
     skipped_stage: OptimizerStage | None = None
+    ranked_suggestions: tuple[PaperSuggestion, ...] = ()
+    rewrite_result: RewriteApplyResult | None = None
+    optimizer_exchanges: tuple[OptimizerExchange, ...] = ()
 
-    def replay(self) -> PatchApplyResult:
-        replayed = apply_paper_patch(self.input_skill, self.ranked_edits)
+    def replay(self) -> PatchApplyResult | RewriteApplyResult:
+        if self.rewrite_result is None:
+            replayed: PatchApplyResult | RewriteApplyResult = apply_paper_patch(
+                self.input_skill,
+                self.ranked_edits,
+            )
+        else:
+            replayed = apply_paper_rewrite(
+                self.input_skill,
+                self.ranked_suggestions,
+                new_skill=self.rewrite_result.output_skill,
+                reasoning=self.rewrite_result.reasoning,
+                change_summary=self.rewrite_result.change_summary,
+            )
         if replayed != self.apply_result:
             raise RuntimeError("fast-step artifact does not replay exactly")
         return replayed
@@ -113,6 +153,7 @@ class PaperFastLoop:
         *,
         profile: PaperProfile,
         retry_policy: OptimizerRetryPolicy = OptimizerRetryPolicy(),
+        _mechanisms: PaperMechanismSpec | None = None,
     ) -> None:
         if type(controller) is not PaperOptimizationController:
             raise ValueError(
@@ -122,20 +163,29 @@ class PaperFastLoop:
         if type(profile) is not PaperProfile:
             raise ValueError("paper fast loop requires exact PaperProfile")
         validated_profile = PaperProfile.from_mapping(profile.to_dict())
+        mechanisms = (
+            PaperMechanismSpec.from_profile(validated_profile)
+            if _mechanisms is None
+            else _mechanisms
+        )
+        if type(mechanisms) is not PaperMechanismSpec:
+            raise ValueError("paper fast loop requires exact mechanism spec")
+        mechanisms.require_profile(validated_profile)
         if type(retry_policy) is not OptimizerRetryPolicy:
             raise ValueError("paper fast loop requires exact OptimizerRetryPolicy")
         retry_policy.__post_init__()
         self._controller = controller
         self._profile = validated_profile
+        self._mechanisms = mechanisms
         self._profile_sha256 = canonical_json_sha256(validated_profile.to_dict())
         self._retry_policy = retry_policy
         self._score_cache: dict[str, SelectionScore] = {}
         self._next_event_sequence = 0
         self._state: PaperState | None = None
         self._epoch_buffer: tuple[EpochBufferRecord, ...] = ()
-        self._scheduled_batch_id: str | None = None
-        self._scheduled_batch_seed: int | None = None
-        self._scheduled_batch_size: int | None = None
+        self._scheduled_batches: tuple[EpochBatchCursor, ...] = ()
+        self._exchange_lock = threading.Lock()
+        self._active_exchanges: list[OptimizerExchange] = []
 
     @property
     def score_cache(self) -> Mapping[str, SelectionScore]:
@@ -221,20 +271,18 @@ class PaperFastLoop:
         self,
         records: tuple[EpochBufferRecord, ...],
         *,
-        batch_id: str,
-        batch_seed: int,
-        batch_size: int,
+        batches: tuple[EpochBatchCursor, ...],
     ) -> None:
         self._set_epoch_buffer(records)
-        if type(batch_id) is not str or not batch_id.strip():
-            raise ValueError("paper epoch step requires scheduled batch_id")
-        if type(batch_seed) is not int or batch_seed < 0:
-            raise ValueError("paper epoch step requires scheduled batch_seed")
-        if type(batch_size) is not int or batch_size < 1:
-            raise ValueError("paper epoch step requires scheduled batch_size")
-        self._scheduled_batch_id = batch_id
-        self._scheduled_batch_seed = batch_seed
-        self._scheduled_batch_size = batch_size
+        if type(batches) is not tuple or not batches or any(
+            type(batch) is not EpochBatchCursor for batch in batches
+        ):
+            raise ValueError("paper epoch step requires scheduled batches")
+        if [batch.accumulation_index for batch in batches] != list(
+            range(1, len(batches) + 1)
+        ):
+            raise ValueError("paper epoch step batch order is not contiguous")
+        self._scheduled_batches = batches
 
     def _begin_next_epoch(self) -> PaperState:
         """Advance lifecycle position without exposing state injection publicly."""
@@ -457,33 +505,77 @@ class PaperFastLoop:
         train_evidence: TrainEvidenceBatch,
         edit_budget: int,
     ) -> FastStepResult:
-        """Execute collect-to-gate once and commit cache/sequence on success."""
+        """Execute the default one-batch fast path."""
+
+        if type(train_evidence) is not TrainEvidenceBatch:
+            raise ValueError("run_step requires exact TrainEvidenceBatch")
+        return self._run_step(
+            train_evidence=StepTrainEvidence((train_evidence,)),
+            analysis_budget=edit_budget,
+            edit_budget=edit_budget,
+        )
+
+    def _run_accumulated_step(
+        self,
+        *,
+        train_evidence: StepTrainEvidence,
+        analysis_budget: int,
+        edit_budget: int | None,
+    ) -> FastStepResult:
+        """Execute one update from separately reflected accumulation batches."""
+
+        return self._run_step(
+            train_evidence=train_evidence,
+            analysis_budget=analysis_budget,
+            edit_budget=edit_budget,
+        )
+
+    def _run_step(
+        self,
+        *,
+        train_evidence: StepTrainEvidence,
+        analysis_budget: int,
+        edit_budget: int | None,
+    ) -> FastStepResult:
+        """Execute collect-to-gate once and commit cache/sequence atomically."""
 
         self._controller.__post_init__()
         if self._state is None:
             raise ValueError("paper fast loop must be initialized")
         state = self._state
-        if type(train_evidence) is not TrainEvidenceBatch:
-            raise ValueError("run_step requires exact TrainEvidenceBatch")
+        with self._exchange_lock:
+            self._active_exchanges = []
+        if type(train_evidence) is not StepTrainEvidence:
+            raise ValueError("accumulated step requires exact StepTrainEvidence")
+        train_evidence.__post_init__()
         if (
-            type(edit_budget) is not int
+            type(analysis_budget) is not int
             or not self._profile.learning_rate_floor
-            <= edit_budget
+            <= analysis_budget
             <= self._profile.learning_rate
         ):
             raise ValueError(
-                "edit_budget must be within the frozen paper learning-rate range"
+                "analysis_budget must be within the frozen learning-rate range"
             )
+        if self._mechanisms.learning_rate_schedule == "autonomous":
+            if edit_budget is not None:
+                raise ValueError("autonomous steps cannot receive a fixed edit budget")
+        elif (
+            type(edit_budget) is not int
+            or not 0 <= edit_budget <= analysis_budget
+        ):
+            raise ValueError("edit_budget must be within the analysis budget")
+        if self._scheduled_batches:
+            if len(train_evidence.batches) != len(self._scheduled_batches):
+                raise ValueError("step evidence does not match accumulation plan")
+            scheduled = self._scheduled_batches
+        else:
+            if len(train_evidence.batches) != 1:
+                raise ValueError("unscheduled fast loop accepts one train batch")
+            scheduled = (None,)
 
         step = state.step + 1
         call_prefix = f"e{state.epoch}-s{step}"
-        trajectories = self._controller.train.verify(
-            train_evidence,
-            current_skill=state.current_skill,
-            batch_id=self._scheduled_batch_id,
-            batch_seed=self._scheduled_batch_seed,
-            batch_size=self._scheduled_batch_size,
-        )
         working_cache = dict(self._score_cache)
         current_hash = _sha256(state.current_skill)
         cached_current = working_cache.get(current_hash)
@@ -502,93 +594,129 @@ class PaperFastLoop:
             step,
             {
                 "edit_budget": edit_budget,
+                "analysis_budget": analysis_budget,
+                "accumulation": len(train_evidence.batches),
                 "current_skill_sha256": current_hash,
                 **(
-                    {"train_batch_id": self._scheduled_batch_id}
-                    if self._scheduled_batch_id is not None
+                    {"train_batch_id": scheduled[0].batch_id}
+                    if scheduled[0] is not None
                     else {}
                 ),
                 **(
                     {
-                        "train_batch_seed": self._scheduled_batch_seed,
-                        "train_batch_size": self._scheduled_batch_size,
+                        "train_batch_seed": scheduled[0].batch_seed,
+                        "train_batch_size": scheduled[0].batch_size,
+                        "train_batch_ids": [
+                            batch.batch_id for batch in scheduled
+                        ],
                     }
-                    if self._scheduled_batch_id is not None
+                    if scheduled[0] is not None
                     else {}
                 ),
             },
         )
-        failures = tuple(item for item in trajectories if not item["success"])
-        successes = tuple(item for item in trajectories if item["success"])
-        self._append_event(
-            events,
-            AlgorithmEventType.ROLLOUT_COLLECTED,
-            state,
-            step,
-            {
-                "trajectory_count": len(trajectories),
-                "failure_count": len(failures),
-                "success_count": len(successes),
-                "train_split_id": train_evidence.split_id,
-                **(
-                    {"train_batch_id": self._scheduled_batch_id}
-                    if self._scheduled_batch_id is not None
-                    else {}
-                ),
-                **(
-                    {
-                        "train_batch_seed": self._scheduled_batch_seed,
-                        "train_batch_size": self._scheduled_batch_size,
-                    }
-                    if self._scheduled_batch_id is not None
-                    else {}
-                ),
-            },
-        )
-
         observed_failure_patterns: list[ObservedFailurePattern] = []
-        failure_proposals = self._reflect_group(
-            state=state,
-            step=step,
-            source=PaperEditSource.FAILURE,
-            trajectories=failures,
-            train_evidence=train_evidence,
-            edit_budget=edit_budget,
-            call_prefix=call_prefix,
-            events=events,
-            observed_failure_patterns=observed_failure_patterns,
-        )
-        success_proposals = self._reflect_group(
-            state=state,
-            step=step,
-            source=PaperEditSource.SUCCESS,
-            trajectories=successes,
-            train_evidence=train_evidence,
-            edit_budget=edit_budget,
-            call_prefix=call_prefix,
-            events=events,
-            observed_failure_patterns=observed_failure_patterns,
-        )
+        failure_proposals: list[ParsedUpdateResponse] = []
+        success_proposals: list[ParsedUpdateResponse] = []
+        rollout_scores: list[float] = []
+        for accumulation_index, (batch_evidence, batch_cursor) in enumerate(
+            zip(train_evidence.batches, scheduled),
+            1,
+        ):
+            trajectories = self._controller.train.verify(
+                batch_evidence,
+                current_skill=state.current_skill,
+                batch_id=(
+                    batch_cursor.batch_id if batch_cursor is not None else None
+                ),
+                batch_seed=(
+                    batch_cursor.batch_seed if batch_cursor is not None else None
+                ),
+                batch_size=(
+                    batch_cursor.batch_size if batch_cursor is not None else None
+                ),
+            )
+            failures = tuple(
+                item for item in trajectories if not item["success"]
+            )
+            successes = tuple(item for item in trajectories if item["success"])
+            rollout_scores.extend(float(item["score"]) for item in trajectories)
+            self._append_event(
+                events,
+                AlgorithmEventType.ROLLOUT_COLLECTED,
+                state,
+                step,
+                {
+                    "trajectory_count": len(trajectories),
+                    "failure_count": len(failures),
+                    "success_count": len(successes),
+                    "train_split_id": batch_evidence.split_id,
+                    "accumulation_index": accumulation_index,
+                    "accumulation": len(train_evidence.batches),
+                    **(
+                        {
+                            "train_batch_id": batch_cursor.batch_id,
+                            "train_batch_seed": batch_cursor.batch_seed,
+                            "train_batch_size": batch_cursor.batch_size,
+                        }
+                        if batch_cursor is not None
+                        else {}
+                    ),
+                },
+            )
+            batch_call_prefix = (
+                call_prefix
+                if len(train_evidence.batches) == 1
+                else f"{call_prefix}-a{accumulation_index}"
+            )
+            failure_proposals.extend(
+                self._reflect_group(
+                    state=state,
+                    step=step,
+                    source=PaperEditSource.FAILURE,
+                    trajectories=failures,
+                    train_evidence=train_evidence,
+                    batch_cursor=batch_cursor,
+                    edit_budget=analysis_budget,
+                    call_prefix=batch_call_prefix,
+                    events=events,
+                    observed_failure_patterns=observed_failure_patterns,
+                )
+            )
+            success_proposals.extend(
+                self._reflect_group(
+                    state=state,
+                    step=step,
+                    source=PaperEditSource.SUCCESS,
+                    trajectories=successes,
+                    train_evidence=train_evidence,
+                    batch_cursor=batch_cursor,
+                    edit_budget=analysis_budget,
+                    call_prefix=batch_call_prefix,
+                    events=events,
+                    observed_failure_patterns=observed_failure_patterns,
+                )
+            )
 
         try:
             failure_merge = self._hierarchical_merge(
                 source=PaperEditSource.FAILURE,
-                proposals=failure_proposals,
+                proposals=tuple(failure_proposals),
                 call_prefix=call_prefix,
                 state=state,
                 step=step,
                 train_evidence=train_evidence,
-                edit_budget=edit_budget,
+                edit_budget=analysis_budget,
                 events=events,
             )
             success_merge = self._hierarchical_merge(
                 source=PaperEditSource.SUCCESS,
-                proposals=success_proposals,
+                proposals=tuple(success_proposals),
                 call_prefix=call_prefix,
                 state=state,
                 step=step,
                 train_evidence=train_evidence,
-                edit_budget=edit_budget,
+                edit_budget=analysis_budget,
                 events=events,
             )
             final_merge = self._merge(
@@ -597,11 +725,11 @@ class PaperFastLoop:
                 state=state,
                 step=step,
                 train_evidence=train_evidence,
-                edit_budget=edit_budget,
+                edit_budget=analysis_budget,
                 prompt_payload={
                     "current_skill": state.current_skill,
-                    "failure_patch": _patch_payload(failure_merge),
-                    "success_patch": _patch_payload(success_merge),
+                    "failure_patch": _update_payload(failure_merge),
+                    "success_patch": _update_payload(success_merge),
                     "meta_skill": state.meta_skill,
                 },
                 edit_id_prefix=f"{call_prefix}-merge-final-edit",
@@ -610,13 +738,24 @@ class PaperFastLoop:
                 batch_index=1,
                 events=events,
             )
-            ranked_edits = self._rank(
+            merged_items = _update_items(final_merge)
+            if edit_budget is None:
+                edit_budget = self._decide_learning_rate(
+                    call_id=f"{call_prefix}-autonomous-lr",
+                    state=state,
+                    step=step,
+                    train_evidence=train_evidence,
+                    candidates=merged_items,
+                    rollout_scores=tuple(rollout_scores),
+                    events=events,
+                )
+            ranked_updates = self._rank(
                 call_id=f"{call_prefix}-rank-top-l",
                 state=state,
                 step=step,
                 train_evidence=train_evidence,
                 edit_budget=edit_budget,
-                candidates=final_merge.edits,
+                candidates=merged_items,
                 events=events,
             )
         except _SemanticStageExhausted as error:
@@ -629,28 +768,76 @@ class PaperFastLoop:
                 failure_patterns=tuple(observed_failure_patterns),
             )
 
-        apply_result = apply_paper_patch(state.current_skill, ranked_edits)
-        self._append_event(
-            events,
-            AlgorithmEventType.PATCH_APPLIED,
-            state,
-            step,
-            {
-                "input_skill_sha256": apply_result.input_sha256,
-                "candidate_skill_sha256": apply_result.output_sha256,
-                "reports": [
+        ranked_edits: tuple[PaperEdit, ...] = ()
+        ranked_suggestions: tuple[PaperSuggestion, ...] = ()
+        rewrite_result: RewriteApplyResult | None = None
+        if self._mechanisms.update_mode == "patch":
+            if any(type(item) is not PaperEdit for item in ranked_updates):
+                raise RuntimeError("patch ranking returned non-edit items")
+            ranked_edits = tuple(ranked_updates)
+            apply_result: PatchApplyResult | RewriteApplyResult = (
+                apply_paper_patch(state.current_skill, ranked_edits)
+            )
+            self._append_event(
+                events,
+                AlgorithmEventType.PATCH_APPLIED,
+                state,
+                step,
+                {
+                    "input_skill_sha256": apply_result.input_sha256,
+                    "candidate_skill_sha256": apply_result.output_sha256,
+                    "reports": [
+                        {
+                            "index": report.index,
+                            "edit_id": report.edit_id,
+                            "operation": report.operation.value,
+                            "status": report.status,
+                            "before_sha256": report.before_sha256,
+                            "after_sha256": report.after_sha256,
+                        }
+                        for report in apply_result.reports
+                    ],
+                },
+            )
+        else:
+            if any(type(item) is not PaperSuggestion for item in ranked_updates):
+                raise RuntimeError("rewrite ranking returned non-suggestion items")
+            ranked_suggestions = tuple(ranked_updates)
+            if ranked_suggestions:
+                rewrite_result = self._rewrite_skill(
+                    call_id=f"{call_prefix}-rewrite-skill",
+                    state=state,
+                    step=step,
+                    train_evidence=train_evidence,
+                    suggestions=ranked_suggestions,
+                )
+                apply_result = rewrite_result
+                self._append_event(
+                    events,
+                    AlgorithmEventType.REWRITE_APPLIED,
+                    state,
+                    step,
                     {
-                        "index": report.index,
-                        "edit_id": report.edit_id,
-                        "operation": report.operation.value,
-                        "status": report.status,
-                        "before_sha256": report.before_sha256,
-                        "after_sha256": report.after_sha256,
-                    }
-                    for report in apply_result.reports
-                ],
-            },
-        )
+                        "input_skill_sha256": apply_result.input_sha256,
+                        "candidate_skill_sha256": apply_result.output_sha256,
+                        "suggestion_ids": [
+                            item.suggestion_id for item in ranked_suggestions
+                        ],
+                        "change_summary": list(apply_result.change_summary),
+                    },
+                )
+            else:
+                apply_result = apply_paper_patch(state.current_skill, ())
+                self._append_event(
+                    events,
+                    AlgorithmEventType.REWRITE_SKIPPED,
+                    state,
+                    step,
+                    {
+                        "reason": "no_ranked_suggestions",
+                        "candidate_skill_sha256": apply_result.output_sha256,
+                    },
+                )
 
         candidate_hash = apply_result.output_sha256
         candidate_score = working_cache.get(candidate_hash)
@@ -723,6 +910,9 @@ class PaperFastLoop:
             apply_result=apply_result,
             events=tuple(events),
             failure_patterns=tuple(observed_failure_patterns),
+            ranked_suggestions=ranked_suggestions,
+            rewrite_result=rewrite_result,
+            optimizer_exchanges=self._take_optimizer_exchanges(),
         )
         result.replay()
         self._score_cache = working_cache
@@ -737,13 +927,13 @@ class PaperFastLoop:
         step: int,
         source: PaperEditSource,
         trajectories: tuple[dict[str, Any], ...],
-        train_evidence: TrainEvidenceBatch,
+        train_evidence: StepTrainEvidence,
+        batch_cursor: EpochBatchCursor | None,
         edit_budget: int,
         call_prefix: str,
         events: list[AlgorithmEvent],
         observed_failure_patterns: list[ObservedFailurePattern],
-    ) -> tuple[ParsedPatchResponse, ...]:
-        proposals: list[ParsedPatchResponse] = []
+    ) -> tuple[ParsedUpdateResponse, ...]:
         stage = (
             OptimizerStage.REFLECT_FAILURE
             if source is PaperEditSource.FAILURE
@@ -754,13 +944,26 @@ class PaperFastLoop:
             if source is PaperEditSource.FAILURE
             else AlgorithmEventType.SUCCESS_REFLECTED
         )
-        for batch_index, start in enumerate(
-            range(0, len(trajectories), self._profile.reflection_minibatch_size),
-            1,
-        ):
-            minibatch = trajectories[
-                start : start + self._profile.reflection_minibatch_size
-            ]
+        minibatches = tuple(
+            trajectories[start : start + self._profile.reflection_minibatch_size]
+            for start in range(
+                0,
+                len(trajectories),
+                self._profile.reflection_minibatch_size,
+            )
+        )
+
+        def analyze(
+            batch_index: int,
+            minibatch: tuple[dict[str, Any], ...],
+        ) -> tuple[
+            ParsedUpdateResponse,
+            tuple[ObservedFailurePattern, ...],
+            tuple[tuple[AlgorithmEventType, Mapping[str, Any]], ...],
+        ]:
+            event_payloads: list[
+                tuple[AlgorithmEventType, Mapping[str, Any]]
+            ] = []
             call_id = f"{call_prefix}-reflect-{source.value}-b{batch_index}"
             response = self._complete(
                 call_id=call_id,
@@ -774,28 +977,38 @@ class PaperFastLoop:
                 response_schema=optimizer_response_schema(
                     stage,
                     edit_budget=edit_budget,
+                    update_mode=self._mechanisms.update_mode,
                 ),
                 train_evidence=train_evidence,
+                batch_cursor=batch_cursor,
             )
-            parsed = parse_patch_response(
-                stage=stage,
-                payload=response.payload,
-                edit_budget=edit_budget,
-                edit_id_prefix=f"{call_id}-edit",
-                expected_batch_size=len(minibatch),
-            )
-            observed_failure_patterns.extend(parsed.failure_patterns)
-            self._append_event(
-                events,
-                event_type,
-                state,
-                step,
-                {
+            if self._mechanisms.update_mode == "patch":
+                parsed: ParsedUpdateResponse = parse_patch_response(
+                    stage=stage,
+                    payload=response.payload,
+                    edit_budget=edit_budget,
+                    edit_id_prefix=f"{call_id}-edit",
+                    expected_batch_size=len(minibatch),
+                )
+            else:
+                parsed = parse_suggestion_response(
+                    stage=stage,
+                    payload=response.payload,
+                    edit_budget=edit_budget,
+                    suggestion_id_prefix=f"{call_id}-suggestion",
+                    expected_batch_size=len(minibatch),
+                )
+            failure_patterns = parsed.failure_patterns
+            event_payloads.append(
+                (
+                    event_type,
+                    {
                     "call_id": call_id,
                     "batch_index": batch_index,
                     "batch_size": len(minibatch),
-                    "edit_count": len(parsed.edits),
-                },
+                    "edit_count": len(_update_items(parsed)),
+                    },
+                )
             )
             for round_number in range(1, self._profile.max_analyst_rounds + 1):
                 refine_call_id = (
@@ -809,7 +1022,7 @@ class PaperFastLoop:
                         "current_skill": state.current_skill,
                         "trajectories": list(minibatch),
                         "source_type": source.value,
-                        "prior_patch": _patch_payload(parsed),
+                        "prior_patch": _update_payload(parsed),
                         "round": round_number,
                         "max_rounds": self._profile.max_analyst_rounds,
                         "edit_budget": edit_budget,
@@ -818,32 +1031,74 @@ class PaperFastLoop:
                     response_schema=optimizer_response_schema(
                         OptimizerStage.REFINE,
                         edit_budget=edit_budget,
+                        update_mode=self._mechanisms.update_mode,
                     ),
                     train_evidence=train_evidence,
+                    batch_cursor=batch_cursor,
                 )
-                parsed = parse_patch_response(
-                    stage=OptimizerStage.REFINE,
-                    payload=response.payload,
-                    edit_budget=edit_budget,
-                    edit_id_prefix=f"{refine_call_id}-edit",
-                    source_type=source,
-                )
-                self._append_event(
-                    events,
-                    AlgorithmEventType.ANALYST_REFINED,
-                    state,
-                    step,
-                    {
+                if self._mechanisms.update_mode == "patch":
+                    parsed = parse_patch_response(
+                        stage=OptimizerStage.REFINE,
+                        payload=response.payload,
+                        edit_budget=edit_budget,
+                        edit_id_prefix=f"{refine_call_id}-edit",
+                        source_type=source,
+                    )
+                else:
+                    parsed = parse_suggestion_response(
+                        stage=OptimizerStage.REFINE,
+                        payload=response.payload,
+                        edit_budget=edit_budget,
+                        suggestion_id_prefix=(
+                            f"{refine_call_id}-suggestion"
+                        ),
+                        source_type=source,
+                    )
+                event_payloads.append(
+                    (
+                        AlgorithmEventType.ANALYST_REFINED,
+                        {
                         "call_id": refine_call_id,
                         "source_type": source.value,
                         "batch_index": batch_index,
                         "round": round_number,
-                        "edit_count": len(parsed.edits),
+                        "edit_count": len(_update_items(parsed)),
                         "converged": parsed.converged,
-                    },
+                        },
+                    )
                 )
                 if parsed.converged:
                     break
+            return parsed, failure_patterns, tuple(event_payloads)
+
+        jobs = tuple(enumerate(minibatches, 1))
+        if len(jobs) > 1 and self._mechanisms.analyst_workers > 1:
+            with ThreadPoolExecutor(
+                max_workers=min(self._mechanisms.analyst_workers, len(jobs)),
+                thread_name_prefix="paper-analyst",
+            ) as executor:
+                futures = [
+                    executor.submit(analyze, batch_index, minibatch)
+                    for batch_index, minibatch in jobs
+                ]
+                results = [future.result() for future in futures]
+        else:
+            results = [
+                analyze(batch_index, minibatch)
+                for batch_index, minibatch in jobs
+            ]
+
+        proposals: list[ParsedUpdateResponse] = []
+        for parsed, failure_patterns, event_payloads in results:
+            observed_failure_patterns.extend(failure_patterns)
+            for reflected_event, payload in event_payloads:
+                self._append_event(
+                    events,
+                    reflected_event,
+                    state,
+                    step,
+                    payload,
+                )
             proposals.append(parsed)
         return tuple(proposals)
 
@@ -851,14 +1106,14 @@ class PaperFastLoop:
         self,
         *,
         source: PaperEditSource,
-        proposals: tuple[ParsedPatchResponse, ...],
+        proposals: tuple[ParsedUpdateResponse, ...],
         call_prefix: str,
         state: PaperState,
         step: int,
-        train_evidence: TrainEvidenceBatch,
+        train_evidence: StepTrainEvidence,
         edit_budget: int,
         events: list[AlgorithmEvent],
-    ) -> ParsedPatchResponse:
+    ) -> ParsedUpdateResponse:
         stage = (
             OptimizerStage.MERGE_FAILURE
             if source is PaperEditSource.FAILURE
@@ -878,7 +1133,7 @@ class PaperFastLoop:
             )
             if not batches:
                 batches = ((),)
-            merged: list[ParsedPatchResponse] = []
+            merged: list[ParsedUpdateResponse] = []
             for batch_index, batch in enumerate(batches, 1):
                 call_id = (
                     f"{call_prefix}-merge-{source.value}"
@@ -895,7 +1150,7 @@ class PaperFastLoop:
                         prompt_payload={
                             "current_skill": state.current_skill,
                             "source_type": source.value,
-                            "patches": [_patch_payload(item) for item in batch],
+                            "patches": [_update_payload(item) for item in batch],
                             "meta_skill": state.meta_skill,
                         },
                         edit_id_prefix=f"{call_id}-edit",
@@ -917,7 +1172,7 @@ class PaperFastLoop:
         call_id: str,
         state: PaperState,
         step: int,
-        train_evidence: TrainEvidenceBatch,
+        train_evidence: StepTrainEvidence,
         edit_budget: int,
         prompt_payload: Mapping[str, Any],
         edit_id_prefix: str,
@@ -925,7 +1180,7 @@ class PaperFastLoop:
         hierarchy_level: int,
         batch_index: int,
         events: list[AlgorithmEvent],
-    ) -> ParsedPatchResponse:
+    ) -> ParsedUpdateResponse:
         last_error: OptimizerContractViolation | None = None
         for attempt in range(1, self._retry_policy.max_semantic_attempts + 1):
             attempt_call_id = _attempt_call_id(call_id, attempt)
@@ -937,20 +1192,30 @@ class PaperFastLoop:
                     response_schema=optimizer_response_schema(
                         stage,
                         edit_budget=edit_budget,
+                        update_mode=self._mechanisms.update_mode,
                     ),
                     train_evidence=train_evidence,
                     semantic_attempt=attempt,
                 )
-                parsed = parse_patch_response(
-                    stage=stage,
-                    payload=response.payload,
-                    edit_budget=edit_budget,
-                    edit_id_prefix=(
-                        edit_id_prefix
-                        if attempt == 1
-                        else f"{edit_id_prefix}-retry-{attempt - 1}"
-                    ),
+                response_id_prefix = (
+                    edit_id_prefix
+                    if attempt == 1
+                    else f"{edit_id_prefix}-retry-{attempt - 1}"
                 )
+                if self._mechanisms.update_mode == "patch":
+                    parsed: ParsedUpdateResponse = parse_patch_response(
+                        stage=stage,
+                        payload=response.payload,
+                        edit_budget=edit_budget,
+                        edit_id_prefix=response_id_prefix,
+                    )
+                else:
+                    parsed = parse_suggestion_response(
+                        stage=stage,
+                        payload=response.payload,
+                        edit_budget=edit_budget,
+                        suggestion_id_prefix=response_id_prefix,
+                    )
             except OptimizerContractViolation as error:
                 last_error = error
                 continue
@@ -961,7 +1226,7 @@ class PaperFastLoop:
                 step,
                 {
                     "call_id": attempt_call_id,
-                    "edit_count": len(parsed.edits),
+                    "edit_count": len(_update_items(parsed)),
                     "hierarchy_level": hierarchy_level,
                     "batch_index": batch_index,
                     "semantic_attempts": attempt,
@@ -976,21 +1241,95 @@ class PaperFastLoop:
             last_error=last_error,
         )
 
+    def _decide_learning_rate(
+        self,
+        *,
+        call_id: str,
+        state: PaperState,
+        step: int,
+        train_evidence: StepTrainEvidence,
+        candidates: tuple[PaperEdit, ...] | tuple[PaperSuggestion, ...],
+        rollout_scores: tuple[float, ...],
+        events: list[AlgorithmEvent],
+    ) -> int:
+        candidate_count = len(candidates)
+        if candidate_count == 0:
+            self._append_event(
+                events,
+                AlgorithmEventType.LEARNING_RATE_DECIDED,
+                state,
+                step,
+                {
+                    "call_id": None,
+                    "candidate_count": 0,
+                    "raw_learning_rate": 0,
+                    "learning_rate": 0,
+                    "reason": "no_candidates",
+                },
+            )
+            return 0
+        rollout_n = len(rollout_scores)
+        response = self._complete(
+            call_id=call_id,
+            stage=OptimizerStage.DECIDE_LEARNING_RATE,
+            prompt_payload={
+                "current_skill": state.current_skill,
+                "update_mode": self._mechanisms.update_mode,
+                "update_items": [_update_item_payload(item) for item in candidates],
+                "candidate_count": candidate_count,
+                "rollout": {
+                    "count": rollout_n,
+                    "hard": (
+                        sum(score >= 1.0 for score in rollout_scores)
+                        / rollout_n
+                        if rollout_n
+                        else 0.0
+                    ),
+                    "soft": (
+                        sum(rollout_scores) / rollout_n if rollout_n else 0.0
+                    ),
+                },
+                "meta_skill": state.meta_skill,
+            },
+            response_schema=learning_rate_response_schema(),
+            train_evidence=train_evidence,
+        )
+        parsed = parse_learning_rate_response(
+            payload=response.payload,
+            candidate_count=candidate_count,
+        )
+        self._append_event(
+            events,
+            AlgorithmEventType.LEARNING_RATE_DECIDED,
+            state,
+            step,
+            {
+                "call_id": call_id,
+                "candidate_count": candidate_count,
+                "raw_learning_rate": parsed.raw_learning_rate,
+                "learning_rate": parsed.learning_rate,
+                "confidence": parsed.confidence,
+                "risk_notes": list(parsed.risk_notes),
+            },
+        )
+        return parsed.learning_rate
+
     def _rank(
         self,
         *,
         call_id: str,
         state: PaperState,
         step: int,
-        train_evidence: TrainEvidenceBatch,
+        train_evidence: StepTrainEvidence,
         edit_budget: int,
-        candidates: tuple[PaperEdit, ...],
+        candidates: tuple[PaperEdit, ...] | tuple[PaperSuggestion, ...],
         events: list[AlgorithmEvent],
-    ) -> tuple[PaperEdit, ...]:
+    ) -> tuple[PaperEdit, ...] | tuple[PaperSuggestion, ...]:
         schema = optimizer_response_schema(
             OptimizerStage.RANK_TOP_L,
             edit_budget=edit_budget,
             candidate_count=len(candidates),
+            update_mode=self._mechanisms.update_mode,
         )
         last_error: OptimizerContractViolation | None = None
         for attempt in range(1, self._retry_policy.max_semantic_attempts + 1):
@@ -1001,7 +1340,13 @@ class PaperFastLoop:
                     stage=OptimizerStage.RANK_TOP_L,
                     prompt_payload={
                         "current_skill": state.current_skill,
-                        "edits": [_edit_payload(edit) for edit in candidates],
+                        (
+                            "edits"
+                            if self._mechanisms.update_mode == "patch"
+                            else "revise_suggestions"
+                        ): [
+                            _update_item_payload(item) for item in candidates
+                        ],
                         "edit_budget": edit_budget,
                         "meta_skill": state.meta_skill,
                     },
@@ -1009,11 +1354,26 @@ class PaperFastLoop:
                     train_evidence=train_evidence,
                     semantic_attempt=attempt,
                 )
-                ranked = parse_rank_response(
-                    payload=response.payload,
-                    candidates=candidates,
-                    edit_budget=edit_budget,
-                )
+                if self._mechanisms.update_mode == "patch":
+                    ranked = parse_rank_response(
+                        payload=response.payload,
+                        candidates=tuple(
+                            item
+                            for item in candidates
+                            if type(item) is PaperEdit
+                        ),
+                        edit_budget=edit_budget,
+                    )
+                else:
+                    ranked = parse_suggestion_rank_response(
+                        payload=response.payload,
+                        candidates=tuple(
+                            item
+                            for item in candidates
+                            if type(item) is PaperSuggestion
+                        ),
+                        edit_budget=edit_budget,
+                    )
             except OptimizerContractViolation as error:
                 last_error = error
                 continue
@@ -1026,7 +1386,14 @@ class PaperFastLoop:
                     "call_id": attempt_call_id,
                     "candidate_count": len(candidates),
                     "selected_count": len(ranked),
-                    "selected_edit_ids": [edit.edit_id for edit in ranked],
+                    "selected_edit_ids": [
+                        (
+                            item.edit_id
+                            if type(item) is PaperEdit
+                            else item.suggestion_id
+                        )
+                        for item in ranked
+                    ],
                     "semantic_attempts": attempt,
                     "retry_policy_id": self._retry_policy.policy_id,
                 },
@@ -1038,6 +1405,42 @@ class PaperFastLoop:
             attempts=self._retry_policy.max_semantic_attempts,
             last_error=last_error,
         )
+
+    def _rewrite_skill(
+        self,
+        *,
+        call_id: str,
+        state: PaperState,
+        step: int,
+        train_evidence: StepTrainEvidence,
+        suggestions: tuple[PaperSuggestion, ...],
+    ) -> RewriteApplyResult:
+        response = self._complete(
+            call_id=call_id,
+            stage=OptimizerStage.REWRITE_SKILL,
+            prompt_payload={
+                "current_skill": state.current_skill,
+                "selected_revise_suggestions": [
+                    _suggestion_payload(item) for item in suggestions
+                ],
+                "meta_skill": state.meta_skill,
+            },
+            response_schema=rewrite_response_schema(),
+            train_evidence=train_evidence,
+        )
+        parsed = parse_rewrite_response(response.payload)
+        try:
+            return apply_paper_rewrite(
+                state.current_skill,
+                suggestions,
+                new_skill=parsed.new_skill,
+                reasoning=parsed.reasoning,
+                change_summary=parsed.change_summary,
+            )
+        except ValueError as error:
+            raise OptimizerContractViolation(
+                f"invalid full-skill rewrite: {error}"
+            ) from error
 
     def _skip_failed_semantic_stage(
         self,
@@ -1082,6 +1485,7 @@ class PaperFastLoop:
             events=tuple(events),
             failure_patterns=failure_patterns,
             skipped_stage=error.stage,
+            optimizer_exchanges=self._take_optimizer_exchanges(),
         )
         result.replay()
         self._score_cache = working_cache
@@ -1096,7 +1500,8 @@ class PaperFastLoop:
         stage: OptimizerStage,
         prompt_payload: Mapping[str, Any],
         response_schema: Mapping[str, Any],
-        train_evidence: TrainEvidenceBatch,
+        train_evidence: StepTrainEvidence,
+        batch_cursor: EpochBatchCursor | None = None,
         semantic_attempt: int = 1,
     ) -> OptimizerResponse:
         try:
@@ -1117,30 +1522,57 @@ class PaperFastLoop:
             raise OptimizerContractViolation(
                 f"fast-loop optimizer prompt is not JSON-safe: {error}"
             ) from error
+        authority = train_evidence.batches[0]
+        scheduled = self._scheduled_batches
+        metadata_batch = batch_cursor or (scheduled[0] if scheduled else None)
         request = OptimizerRequest(
             call_id=call_id,
             stage=stage,
             prompt=prompt,
             response_schema=response_schema,
-            system_prompt=load_optimizer_prompt(stage),
+            system_prompt=load_optimizer_prompt(
+                stage,
+                update_mode=self._mechanisms.update_mode,
+            ),
             metadata={
                 "protocol_id": self._profile.protocol_id,
                 "paper_profile_sha256": self._profile_sha256,
                 "data_sources": ["train"],
-                "controller_registry_sha256": train_evidence.registry_sha256,
-                "train_controller_id": train_evidence.controller_id,
-                "train_split_id": train_evidence.split_id,
+                "controller_registry_sha256": authority.registry_sha256,
+                "train_controller_id": authority.controller_id,
+                "train_split_id": authority.split_id,
                 "train_split_manifest_sha256": (
-                    train_evidence.split_manifest_sha256
+                    authority.split_manifest_sha256
                 ),
                 "retry_policy_id": self._retry_policy.policy_id,
                 "semantic_attempt": semantic_attempt,
                 "semantic_max_attempts": (
                     self._retry_policy.max_semantic_attempts
                 ),
-                "train_batch_id": self._scheduled_batch_id,
-                "train_batch_seed": self._scheduled_batch_seed,
-                "train_batch_size": self._scheduled_batch_size,
+                "accumulation": len(train_evidence.batches),
+                "accumulation_index": (
+                    batch_cursor.accumulation_index
+                    if batch_cursor is not None
+                    else None
+                ),
+                "train_batch_ids": [
+                    batch.batch_id for batch in scheduled
+                ],
+                "train_batch_id": (
+                    metadata_batch.batch_id
+                    if metadata_batch is not None
+                    else None
+                ),
+                "train_batch_seed": (
+                    metadata_batch.batch_seed
+                    if metadata_batch is not None
+                    else None
+                ),
+                "train_batch_size": (
+                    metadata_batch.batch_size
+                    if metadata_batch is not None
+                    else None
+                ),
             },
         )
         response = self._controller.optimizer_backend.complete(request)
@@ -1152,7 +1584,25 @@ class PaperFastLoop:
             raise OptimizerContractViolation(
                 "optimizer response call_id does not match its request"
             )
+        with self._exchange_lock:
+            self._active_exchanges.append(
+                OptimizerExchange(request=request, response=response)
+            )
         return response
+
+    def _take_optimizer_exchanges(self) -> tuple[OptimizerExchange, ...]:
+        with self._exchange_lock:
+            exchanges = tuple(
+                sorted(
+                    self._active_exchanges,
+                    key=lambda item: (
+                        _stage_order(item.request.stage),
+                        item.request.call_id,
+                    ),
+                )
+            )
+            self._active_exchanges = []
+        return exchanges
 
     def _append_event(
         self,
@@ -1180,6 +1630,37 @@ def _patch_payload(value: ParsedPatchResponse) -> dict[str, Any]:
     }
 
 
+def _update_items(
+    value: ParsedUpdateResponse,
+) -> tuple[PaperEdit, ...] | tuple[PaperSuggestion, ...]:
+    if type(value) is ParsedPatchResponse:
+        return value.edits
+    if type(value) is ParsedSuggestionResponse:
+        return value.suggestions
+    raise ValueError("unknown parsed update response")
+
+
+def _update_payload(value: ParsedUpdateResponse) -> dict[str, Any]:
+    if type(value) is ParsedPatchResponse:
+        return _patch_payload(value)
+    if type(value) is ParsedSuggestionResponse:
+        return {
+            "reasoning": value.reasoning,
+            "revise_suggestions": [
+                _suggestion_payload(item) for item in value.suggestions
+            ],
+        }
+    raise ValueError("unknown parsed update response")
+
+
+def _update_item_payload(item: PaperEdit | PaperSuggestion) -> dict[str, Any]:
+    if type(item) is PaperEdit:
+        return _edit_payload(item)
+    if type(item) is PaperSuggestion:
+        return _suggestion_payload(item)
+    raise ValueError("unknown paper update item")
+
+
 def _edit_payload(edit: PaperEdit) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "edit_id": edit.edit_id,
@@ -1195,6 +1676,21 @@ def _edit_payload(edit: PaperEdit) -> dict[str, Any]:
     return payload
 
 
+def _suggestion_payload(suggestion: PaperSuggestion) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "suggestion_id": suggestion.suggestion_id,
+        "type": suggestion.suggestion_type.value,
+        "title": suggestion.title,
+        "motivation": suggestion.motivation,
+        "instruction": suggestion.instruction,
+        "priority_hint": suggestion.priority_hint.value,
+        "support_count": suggestion.support_count,
+    }
+    if suggestion.source_type is not None:
+        payload["source_type"] = suggestion.source_type.value
+    return payload
+
+
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -1203,3 +1699,18 @@ def _attempt_call_id(call_id: str, attempt: int) -> str:
     if attempt == 1:
         return call_id
     return f"{call_id}-semantic-retry-{attempt - 1}"
+
+
+def _stage_order(stage: OptimizerStage) -> int:
+    order = {
+        OptimizerStage.REFLECT_FAILURE: 0,
+        OptimizerStage.REFLECT_SUCCESS: 0,
+        OptimizerStage.REFINE: 1,
+        OptimizerStage.MERGE_FAILURE: 2,
+        OptimizerStage.MERGE_SUCCESS: 2,
+        OptimizerStage.MERGE_FINAL_FAILURE_PRIORITIZED: 3,
+        OptimizerStage.DECIDE_LEARNING_RATE: 4,
+        OptimizerStage.RANK_TOP_L: 5,
+        OptimizerStage.REWRITE_SKILL: 6,
+    }
+    return order.get(stage, 99)

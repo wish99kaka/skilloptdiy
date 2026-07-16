@@ -136,6 +136,54 @@ class TrainEvidenceBatch:
 
 
 @dataclass(frozen=True)
+class StepTrainEvidence:
+    """One optimization step's independently signed accumulation batches."""
+
+    batches: tuple[TrainEvidenceBatch, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.batches) is not tuple or not self.batches or any(
+            type(batch) is not TrainEvidenceBatch for batch in self.batches
+        ):
+            raise DataFirewallViolation(
+                "step evidence requires exact signed train batches"
+            )
+        for batch in self.batches:
+            batch.__post_init__()
+        authority = {
+            (
+                batch.controller_id,
+                batch.registry_sha256,
+                batch.split_id,
+                batch.split_manifest_sha256,
+            )
+            for batch in self.batches
+        }
+        if len(authority) != 1:
+            raise DataFirewallViolation(
+                "accumulation batches must share one train authority"
+            )
+        batch_ids: list[str] = []
+        for batch in self.batches:
+            try:
+                request = json.loads(batch.canonical_request)
+            except json.JSONDecodeError as error:
+                raise DataFirewallViolation(
+                    "train evidence request is not JSON"
+                ) from error
+            batch_id = request.get("batch_id")
+            if type(batch_id) is str:
+                batch_ids.append(batch_id)
+        if batch_ids and (
+            len(batch_ids) != len(self.batches)
+            or len(set(batch_ids)) != len(batch_ids)
+        ):
+            raise DataFirewallViolation(
+                "accumulation batches require distinct scheduled batch IDs"
+            )
+
+
+@dataclass(frozen=True)
 class TrainController:
     """Invoke and authenticate the registry's sole train data owner."""
 

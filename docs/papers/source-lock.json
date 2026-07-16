@@ -46,6 +46,38 @@
       {
         "path": "skillopt/prompts/meta_skill.md",
         "sha256": "b2bab7f7635cd2a94348de6adf15ceaa247ddabd0a2a8bb7c53eab5cfca7deba"
+      },
+      {
+        "path": "skillopt/prompts/lr_autonomous.md",
+        "sha256": "667c78c7873a28fae0e6f47c5c6ed556d76dfe337c74da986757c9e4fadb1f0e"
+      },
+      {
+        "path": "skillopt/prompts/analyst_error_rewrite.md",
+        "sha256": "c393358b2be63d49bc8400944f17bcfb45f58aed5959cf6a46c2e1c1caefcd1b"
+      },
+      {
+        "path": "skillopt/prompts/analyst_success_rewrite.md",
+        "sha256": "758bfe107d15ba1b5318f7191ea9e965fb09982b12599d62fee9db0d823f22f0"
+      },
+      {
+        "path": "skillopt/prompts/merge_failure_rewrite.md",
+        "sha256": "e9cd2289d8515bca4561e52d3c8da14a2fe97d1b2e77d50f0d34f2fb257326c1"
+      },
+      {
+        "path": "skillopt/prompts/merge_success_rewrite.md",
+        "sha256": "2b293d9a16da199cade8bdade560b12553577ad66aacb0f9de3ae979aa150ab7"
+      },
+      {
+        "path": "skillopt/prompts/merge_final_rewrite.md",
+        "sha256": "6a79e19eebe2fbbe20f93a6b864c7c157388bbae168980154c0cdac452bbdfe4"
+      },
+      {
+        "path": "skillopt/prompts/ranking_rewrite.md",
+        "sha256": "2ff8c755188704352cb7dd5c57bbce66c506145a5a5cd212b8881bd09d608031"
+      },
+      {
+        "path": "skillopt/prompts/rewrite_skill.md",
+        "sha256": "2da412ee1d92ab32e59f8a33e2816a2c315edef5e2906d7628d8d093ae0dc68a"
       }
     ]
   },
