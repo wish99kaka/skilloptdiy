@@ -64,6 +64,53 @@ def apply_paper_patch(
     )
 
 
+def write_slow_update_field(skill_text: str, content: str = "") -> str:
+    """Create or exclusively replace the single protected slow-update field."""
+
+    if type(skill_text) is not str or not skill_text.strip():
+        raise ValueError("slow update requires skill_text")
+    if type(content) is not str:
+        raise ValueError("slow update content must be a string")
+    if content.count(SLOW_UPDATE_START) or content.count(SLOW_UPDATE_END):
+        raise ValueError("slow update content cannot contain protected markers")
+    start_count = skill_text.count(SLOW_UPDATE_START)
+    end_count = skill_text.count(SLOW_UPDATE_END)
+    if start_count == 0 and end_count == 0:
+        body = content.strip()
+        return (
+            skill_text.rstrip()
+            + f"\n\n{SLOW_UPDATE_START}\n"
+            + (body + "\n" if body else "")
+            + f"{SLOW_UPDATE_END}\n"
+        )
+    if start_count != 1 or end_count != 1:
+        raise ValueError("skill must contain exactly one complete slow-update field")
+    start = skill_text.index(SLOW_UPDATE_START)
+    end = skill_text.index(SLOW_UPDATE_END)
+    if end < start + len(SLOW_UPDATE_START):
+        raise ValueError("slow-update field markers are out of order")
+    body = content.strip()
+    return (
+        skill_text[: start + len(SLOW_UPDATE_START)]
+        + "\n"
+        + (body + "\n" if body else "")
+        + skill_text[end:]
+    )
+
+
+def read_slow_update_field(skill_text: str) -> str:
+    """Return the exact guidance inside the one valid protected field."""
+
+    normalized = write_slow_update_field(skill_text, "")
+    if normalized.count(SLOW_UPDATE_START) != 1:
+        raise AssertionError("normalized slow-update field is missing")
+    start = skill_text.find(SLOW_UPDATE_START)
+    end = skill_text.find(SLOW_UPDATE_END)
+    if start == -1 or end == -1:
+        return ""
+    return skill_text[start + len(SLOW_UPDATE_START) : end].strip()
+
+
 def _apply_edit(skill_text: str, edit: PaperEdit) -> tuple[str, str]:
     content = _strip_slow_markers(edit.content).strip()
     if edit.target and _target_is_protected(skill_text, edit.target):

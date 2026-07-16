@@ -3,13 +3,40 @@ import unittest
 from textskill_optimizer.paper import OptimizerStage, PaperEdit, PaperEditOperation
 from textskill_optimizer.paper.responses import (
     OptimizerContractViolation,
+    epoch_response_schema,
     optimizer_response_schema,
+    parse_epoch_response,
     parse_patch_response,
     parse_rank_response,
 )
 
 
 class PaperOptimizerResponseTests(unittest.TestCase):
+    def test_slow_and_meta_text_contracts_are_strict(self) -> None:
+        cases = (
+            (
+                OptimizerStage.PROPOSE_SLOW_UPDATE,
+                "slow_update_content",
+            ),
+            (OptimizerStage.UPDATE_META_SKILL, "meta_skill_content"),
+        )
+        for stage, field in cases:
+            with self.subTest(stage=stage):
+                payload = {"reasoning": "evidence", field: "durable guidance"}
+                parsed = parse_epoch_response(stage=stage, payload=payload)
+                self.assertEqual(parsed.content, "durable guidance")
+                self.assertEqual(parsed.response_schema, epoch_response_schema(stage))
+                with self.assertRaises(OptimizerContractViolation):
+                    parse_epoch_response(
+                        stage=stage,
+                        payload={**payload, "selection_diagnostics": {}},
+                    )
+                with self.assertRaises(OptimizerContractViolation):
+                    parse_epoch_response(
+                        stage=stage,
+                        payload={"reasoning": "evidence", field: "   "},
+                    )
+
     def test_failure_analysis_rejects_response_side_channels(self) -> None:
         payload = {
             "batch_size": 2,
@@ -43,6 +70,16 @@ class PaperOptimizerResponseTests(unittest.TestCase):
         )
         payload["selection_diagnostics"] = {"private": True}
         with self.assertRaisesRegex(OptimizerContractViolation, "unknown field"):
+            parse_patch_response(
+                stage=OptimizerStage.REFLECT_FAILURE,
+                payload=payload,
+                edit_budget=1,
+                edit_id_prefix="failure-1",
+                expected_batch_size=2,
+            )
+        payload.pop("selection_diagnostics")
+        payload["failure_summary"][0]["failure_type"] = "   "
+        with self.assertRaisesRegex(OptimizerContractViolation, "failure_summary"):
             parse_patch_response(
                 stage=OptimizerStage.REFLECT_FAILURE,
                 payload=payload,

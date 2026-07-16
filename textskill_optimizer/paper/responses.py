@@ -7,7 +7,12 @@ from typing import Any, Mapping
 
 from .backend import OptimizerStage
 from .schema_validation import validate_schema
-from .types import PaperEdit, PaperEditOperation, PaperEditSource
+from .types import (
+    ObservedFailurePattern,
+    PaperEdit,
+    PaperEditOperation,
+    PaperEditSource,
+)
 
 
 class OptimizerContractViolation(ValueError):
@@ -20,6 +25,14 @@ class ParsedPatchResponse:
     reasoning: str
     edits: tuple[PaperEdit, ...]
     converged: bool = False
+    failure_patterns: tuple[ObservedFailurePattern, ...] = ()
+
+
+@dataclass(frozen=True)
+class ParsedTextUpdate:
+    response_schema: Mapping[str, Any]
+    reasoning: str
+    content: str
 
 
 _PATCH_STAGES = frozenset(
@@ -151,11 +164,29 @@ def parse_patch_response(
             raise OptimizerContractViolation(
                 f"invalid edit at index {index - 1}: {error}"
             ) from error
+    try:
+        failure_patterns = (
+            tuple(
+                ObservedFailurePattern(
+                    failure_type=item["failure_type"],
+                    count=item["count"],
+                    description=item["description"],
+                )
+                for item in payload["failure_summary"]
+            )
+            if stage is OptimizerStage.REFLECT_FAILURE
+            else ()
+        )
+    except ValueError as error:
+        raise OptimizerContractViolation(
+            f"invalid failure_summary: {error}"
+        ) from error
     return ParsedPatchResponse(
         response_schema=schema,
         reasoning=reasoning,
         edits=tuple(edits),
         converged=converged,
+        failure_patterns=failure_patterns,
     )
 
 
@@ -183,6 +214,45 @@ def parse_rank_response(
     if any(index >= len(candidates) for index in indices):
         raise OptimizerContractViolation("selected_indices contains an unknown edit")
     return tuple(candidates[index] for index in indices)
+
+
+def epoch_response_schema(stage: OptimizerStage) -> dict[str, Any]:
+    if stage is OptimizerStage.PROPOSE_SLOW_UPDATE:
+        content_field = "slow_update_content"
+    elif stage is OptimizerStage.UPDATE_META_SKILL:
+        content_field = "meta_skill_content"
+    else:
+        raise ValueError(f"stage has no epoch response contract: {stage.value}")
+    return _object_schema(
+        required=("reasoning", content_field),
+        properties={
+            "reasoning": {"type": "string"},
+            content_field: {"type": "string", "minLength": 1},
+        },
+    )
+
+
+def parse_epoch_response(
+    *,
+    stage: OptimizerStage,
+    payload: Mapping[str, Any],
+) -> ParsedTextUpdate:
+    schema = epoch_response_schema(stage)
+    _require_valid_payload(payload, schema)
+    field = (
+        "slow_update_content"
+        if stage is OptimizerStage.PROPOSE_SLOW_UPDATE
+        else "meta_skill_content"
+    )
+    if not payload[field].strip():
+        raise OptimizerContractViolation(
+            f"invalid optimizer response: {field} must contain guidance"
+        )
+    return ParsedTextUpdate(
+        response_schema=schema,
+        reasoning=payload["reasoning"],
+        content=payload[field],
+    )
 
 
 def _require_stage_and_budget(stage: OptimizerStage, edit_budget: int) -> None:

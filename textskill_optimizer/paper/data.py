@@ -147,10 +147,22 @@ class TrainController:
             raise DataFirewallViolation("train requires exact controller registry")
         self.registry.require(self.controller_id, role=ControllerRole.TRAIN)
 
-    def collect(self, skill_text: str) -> TrainEvidenceBatch:
+    def collect(
+        self,
+        skill_text: str,
+        *,
+        batch_id: str | None = None,
+        batch_seed: int | None = None,
+        batch_size: int | None = None,
+    ) -> TrainEvidenceBatch:
         self.__post_init__()
         if type(skill_text) is not str or not skill_text.strip():
             raise DataFirewallViolation("train collection requires skill_text")
+        _validate_scheduled_batch(
+            batch_id=batch_id,
+            batch_seed=batch_seed,
+            batch_size=batch_size,
+        )
         registration = self.registry.require(
             self.controller_id, role=ControllerRole.TRAIN
         )
@@ -162,6 +174,10 @@ class TrainController:
                 "split_manifest"
             ).sha256,
         }
+        if batch_id is not None:
+            request["batch_id"] = batch_id
+            request["batch_seed"] = batch_seed
+            request["batch_size"] = batch_size
         response, signature = invoke_optimization_controller(
             registry=self.registry,
             controller_id=self.controller_id,
@@ -174,6 +190,9 @@ class TrainController:
             expected_split_manifest_sha256=registration.artifact(
                 "split_manifest"
             ).sha256,
+            expected_batch_id=batch_id,
+            expected_batch_seed=batch_seed,
+            expected_batch_size=batch_size,
         )
         # Preserve the exact signed payload. Validation above rejects every
         # side-channel field before evidence can be created.
@@ -194,6 +213,9 @@ class TrainController:
         evidence: TrainEvidenceBatch,
         *,
         current_skill: str,
+        batch_id: str | None = None,
+        batch_seed: int | None = None,
+        batch_size: int | None = None,
     ) -> tuple[dict[str, Any], ...]:
         self.__post_init__()
         if type(evidence) is not TrainEvidenceBatch:
@@ -201,6 +223,11 @@ class TrainController:
         evidence.__post_init__()
         registration = self.registry.require(
             self.controller_id, role=ControllerRole.TRAIN
+        )
+        _validate_scheduled_batch(
+            batch_id=batch_id,
+            batch_seed=batch_seed,
+            batch_size=batch_size,
         )
         if (
             evidence.controller_id != self.controller_id
@@ -218,8 +245,14 @@ class TrainController:
                 "split_manifest"
             ).sha256,
         }
+        if batch_id is not None:
+            expected_request["batch_id"] = batch_id
+            expected_request["batch_seed"] = batch_seed
+            expected_request["batch_size"] = batch_size
         if evidence.canonical_request != canonical_json(expected_request):
-            raise DataFirewallViolation("train evidence is not bound to current_skill")
+            raise DataFirewallViolation(
+                "train evidence is not bound to current_skill and scheduled batch"
+            )
         try:
             payload = json.loads(evidence.canonical_payload)
         except json.JSONDecodeError as error:
@@ -241,6 +274,9 @@ class TrainController:
             expected_split_manifest_sha256=registration.artifact(
                 "split_manifest"
             ).sha256,
+            expected_batch_id=batch_id,
+            expected_batch_seed=batch_seed,
+            expected_batch_size=batch_size,
         )
 
 
@@ -287,10 +323,16 @@ def _validated_train_payload(
     *,
     expected_split_id: str,
     expected_split_manifest_sha256: str,
+    expected_batch_id: str | None = None,
+    expected_batch_seed: int | None = None,
+    expected_batch_size: int | None = None,
 ) -> tuple[dict[str, Any], ...]:
+    expected_fields = {"split_id", "split_manifest_sha256", "trajectories"}
+    if expected_batch_id is not None:
+        expected_fields.update({"batch_id", "batch_seed", "batch_size"})
     require_exact_keys(
         value,
-        {"split_id", "split_manifest_sha256", "trajectories"},
+        expected_fields,
         context="train response",
     )
     if value["split_id"] != expected_split_id:
@@ -299,10 +341,49 @@ def _validated_train_payload(
         raise DataFirewallViolation(
             "train response split manifest does not match registry"
         )
+    if expected_batch_id is not None:
+        if (
+            type(value["batch_id"]) is not str
+            or type(value["batch_seed"]) is not int
+            or type(value["batch_size"]) is not int
+            or value["batch_id"] != expected_batch_id
+            or value["batch_seed"] != expected_batch_seed
+            or value["batch_size"] != expected_batch_size
+        ):
+            raise DataFirewallViolation("train response batch plan does not match request")
     raw = value["trajectories"]
     if type(raw) is not list or not raw:
         raise DataFirewallViolation("train response requires trajectories")
-    return tuple(_normalize_train_trajectory(item) for item in raw)
+    if expected_batch_size is not None and len(raw) != expected_batch_size:
+        raise DataFirewallViolation(
+            "train response trajectory count does not match scheduled batch_size"
+        )
+    normalized = tuple(_normalize_train_trajectory(item) for item in raw)
+    task_ids = [item["task_id"] for item in normalized]
+    if len(task_ids) != len(set(task_ids)):
+        raise DataFirewallViolation("train response task IDs must be unique")
+    return normalized
+
+
+def _validate_scheduled_batch(
+    *,
+    batch_id: str | None,
+    batch_seed: int | None,
+    batch_size: int | None,
+) -> None:
+    values = (batch_id, batch_seed, batch_size)
+    if all(value is None for value in values):
+        return
+    if any(value is None for value in values):
+        raise DataFirewallViolation(
+            "scheduled train batch requires id, seed, and size together"
+        )
+    if type(batch_id) is not str or not batch_id.strip():
+        raise DataFirewallViolation("train collection batch_id must be non-empty")
+    if type(batch_seed) is not int or batch_seed < 0:
+        raise DataFirewallViolation("train collection batch_seed must be non-negative")
+    if type(batch_size) is not int or batch_size < 1:
+        raise DataFirewallViolation("train collection batch_size must be positive")
 
 
 def _normalize_train_trajectory(value: object) -> dict[str, Any]:

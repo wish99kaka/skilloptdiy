@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from importlib.resources import files
@@ -49,6 +50,29 @@ class PaperEditSource(str, Enum):
 
 
 @dataclass(frozen=True)
+class ObservedFailurePattern:
+    failure_type: str
+    count: int
+    description: str
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not str or not value.strip()
+            for value in (self.failure_type, self.description)
+        ):
+            raise ValueError("observed failure pattern requires non-empty text")
+        if type(self.count) is not int or self.count < 1:
+            raise ValueError("observed failure pattern count must be positive")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "failure_type": self.failure_type,
+            "count": self.count,
+            "description": self.description,
+        }
+
+
+@dataclass(frozen=True)
 class PaperEdit:
     edit_id: str
     operation: PaperEditOperation
@@ -89,6 +113,159 @@ class PaperEdit:
             and type(self.source_type) is not PaperEditSource
         ):
             raise ValueError("paper edit source_type must be failure or success")
+
+
+@dataclass(frozen=True)
+class EpochBufferRecord:
+    """Train-derived step evidence plus rejected scalar-gate feedback."""
+
+    epoch: int
+    step: int
+    failure_patterns: tuple[ObservedFailurePattern, ...]
+    rejected_edits: tuple[PaperEdit, ...]
+    score_delta: float | None
+
+    def __post_init__(self) -> None:
+        if type(self.epoch) is not int or self.epoch < 1:
+            raise ValueError("epoch buffer record requires positive epoch")
+        if type(self.step) is not int or self.step < 1:
+            raise ValueError("epoch buffer record requires positive step")
+        if type(self.failure_patterns) is not tuple or any(
+            type(item) is not ObservedFailurePattern
+            for item in self.failure_patterns
+        ):
+            raise ValueError("epoch buffer requires exact failure patterns")
+        if type(self.rejected_edits) is not tuple or any(
+            type(item) is not PaperEdit for item in self.rejected_edits
+        ):
+            raise ValueError("epoch buffer requires exact rejected edits")
+        if self.rejected_edits:
+            if (
+                type(self.score_delta) is not float
+                or not math.isfinite(self.score_delta)
+                or self.score_delta > 0
+            ):
+                raise ValueError("rejected edits require a finite non-positive delta")
+        elif self.score_delta is not None:
+            if type(self.score_delta) is not float or not math.isfinite(
+                self.score_delta
+            ):
+                raise ValueError("epoch buffer delta must be finite")
+
+    def to_optimizer_payload(self) -> dict[str, Any]:
+        return {
+            "epoch": self.epoch,
+            "step": self.step,
+            "failure_patterns": [
+                pattern.to_dict() for pattern in self.failure_patterns
+            ],
+            "rejected_edits": [
+                {
+                    "edit_id": edit.edit_id,
+                    "op": edit.operation.value,
+                    "target": edit.target,
+                    "content": edit.content,
+                    "source_type": (
+                        edit.source_type.value
+                        if edit.source_type is not None
+                        else None
+                    ),
+                }
+                for edit in self.rejected_edits
+            ],
+            "score_delta": self.score_delta,
+        }
+
+    def to_checkpoint_dict(self) -> dict[str, Any]:
+        return {
+            "epoch": self.epoch,
+            "step": self.step,
+            "failure_patterns": [
+                pattern.to_dict() for pattern in self.failure_patterns
+            ],
+            "rejected_edits": [
+                {
+                    "edit_id": edit.edit_id,
+                    "operation": edit.operation.value,
+                    "target": edit.target,
+                    "content": edit.content,
+                    "rationale": edit.rationale,
+                    "support_count": edit.support_count,
+                    "source_type": (
+                        edit.source_type.value
+                        if edit.source_type is not None
+                        else None
+                    ),
+                }
+                for edit in self.rejected_edits
+            ],
+            "score_delta": self.score_delta,
+        }
+
+    @classmethod
+    def from_checkpoint_mapping(
+        cls,
+        payload: Mapping[str, Any],
+    ) -> "EpochBufferRecord":
+        expected = {
+            "epoch",
+            "step",
+            "failure_patterns",
+            "rejected_edits",
+            "score_delta",
+        }
+        if type(payload) is not dict or set(payload) != expected:
+            raise ValueError("invalid epoch buffer checkpoint record")
+        if type(payload["failure_patterns"]) is not list or type(
+            payload["rejected_edits"]
+        ) is not list:
+            raise ValueError("invalid epoch buffer checkpoint lists")
+        patterns: list[ObservedFailurePattern] = []
+        for item in payload["failure_patterns"]:
+            if type(item) is not dict or set(item) != {
+                "failure_type",
+                "count",
+                "description",
+            }:
+                raise ValueError("invalid checkpoint failure pattern")
+            patterns.append(ObservedFailurePattern(**item))
+        edits: list[PaperEdit] = []
+        for item in payload["rejected_edits"]:
+            if type(item) is not dict or set(item) != {
+                "edit_id",
+                "operation",
+                "target",
+                "content",
+                "rationale",
+                "support_count",
+                "source_type",
+            }:
+                raise ValueError("invalid checkpoint rejected edit")
+            edits.append(
+                PaperEdit(
+                    edit_id=item["edit_id"],
+                    operation=PaperEditOperation(item["operation"]),
+                    target=item["target"],
+                    content=item["content"],
+                    rationale=item["rationale"],
+                    support_count=item["support_count"],
+                    source_type=(
+                        PaperEditSource(item["source_type"])
+                        if item["source_type"] is not None
+                        else None
+                    ),
+                )
+            )
+        score_delta = payload["score_delta"]
+        if score_delta is not None and type(score_delta) in {int, float}:
+            score_delta = float(score_delta)
+        return cls(
+            epoch=payload["epoch"],
+            step=payload["step"],
+            failure_patterns=tuple(patterns),
+            rejected_edits=tuple(edits),
+            score_delta=score_delta,
+        )
 
 
 @dataclass(frozen=True)

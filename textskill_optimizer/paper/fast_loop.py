@@ -25,6 +25,8 @@ from .responses import (
 from .types import (
     AlgorithmEvent,
     AlgorithmEventType,
+    EpochBufferRecord,
+    ObservedFailurePattern,
     PaperEdit,
     PaperEditSource,
     PaperState,
@@ -71,6 +73,7 @@ class FastStepResult:
     ranked_edits: tuple[PaperEdit, ...]
     apply_result: PatchApplyResult
     events: tuple[AlgorithmEvent, ...]
+    failure_patterns: tuple[ObservedFailurePattern, ...] = ()
     skipped_stage: OptimizerStage | None = None
 
     def replay(self) -> PatchApplyResult:
@@ -78,6 +81,27 @@ class FastStepResult:
         if replayed != self.apply_result:
             raise RuntimeError("fast-step artifact does not replay exactly")
         return replayed
+
+
+@dataclass(frozen=True)
+class ExternalGateResult:
+    state: PaperState
+    candidate_score: SelectionScore
+    accepted: bool
+    delta: float
+    cache_hit: bool
+    events: tuple[AlgorithmEvent, ...]
+
+
+@dataclass(frozen=True)
+class _ExternalGatePreview:
+    input_state: PaperState
+    candidate_skill_sha256: str
+    candidate_score: SelectionScore
+    accepted: bool
+    delta: float
+    cache_hit: bool
+    score_cache: tuple[tuple[str, SelectionScore], ...]
 
 
 class PaperFastLoop:
@@ -108,6 +132,10 @@ class PaperFastLoop:
         self._score_cache: dict[str, SelectionScore] = {}
         self._next_event_sequence = 0
         self._state: PaperState | None = None
+        self._epoch_buffer: tuple[EpochBufferRecord, ...] = ()
+        self._scheduled_batch_id: str | None = None
+        self._scheduled_batch_seed: int | None = None
+        self._scheduled_batch_size: int | None = None
 
     @property
     def score_cache(self) -> Mapping[str, SelectionScore]:
@@ -143,6 +171,286 @@ class PaperFastLoop:
         )
         return self._state
 
+    def _record_lifecycle_event(
+        self,
+        event_type: AlgorithmEventType,
+        payload: Mapping[str, Any],
+    ) -> AlgorithmEvent:
+        """Reserve one event in the shared sequence for the epoch owner."""
+
+        if self._state is None:
+            raise ValueError("paper fast loop must be initialized")
+        if event_type not in {
+            AlgorithmEventType.RUN_STARTED,
+            AlgorithmEventType.EPOCH_STARTED,
+            AlgorithmEventType.SLOW_UPDATE_SKIPPED,
+            AlgorithmEventType.SLOW_UPDATE_PROPOSED,
+            AlgorithmEventType.META_UPDATE_SKIPPED,
+            AlgorithmEventType.META_UPDATE_COMPLETED,
+            AlgorithmEventType.EPOCH_COMPLETED,
+            AlgorithmEventType.RUN_COMPLETED,
+        }:
+            raise ValueError("event is not owned by the paper epoch loop")
+        event = AlgorithmEvent(
+            sequence=self._next_event_sequence,
+            event_type=event_type,
+            epoch=self._state.epoch,
+            step=None,
+            payload=dict(payload),
+        )
+        self._next_event_sequence += 1
+        return event
+
+    def _set_epoch_buffer(
+        self,
+        records: tuple[EpochBufferRecord, ...],
+    ) -> None:
+        """Set optimizer context derived by the owning epoch loop."""
+
+        if self._state is None:
+            raise ValueError("paper fast loop must be initialized")
+        if type(records) is not tuple or any(
+            type(record) is not EpochBufferRecord for record in records
+        ):
+            raise ValueError("paper fast loop requires exact epoch buffer records")
+        if any(record.epoch != self._state.epoch for record in records):
+            raise ValueError("epoch buffer cannot cross epoch boundaries")
+        self._epoch_buffer = records
+
+    def _prepare_epoch_step(
+        self,
+        records: tuple[EpochBufferRecord, ...],
+        *,
+        batch_id: str,
+        batch_seed: int,
+        batch_size: int,
+    ) -> None:
+        self._set_epoch_buffer(records)
+        if type(batch_id) is not str or not batch_id.strip():
+            raise ValueError("paper epoch step requires scheduled batch_id")
+        if type(batch_seed) is not int or batch_seed < 0:
+            raise ValueError("paper epoch step requires scheduled batch_seed")
+        if type(batch_size) is not int or batch_size < 1:
+            raise ValueError("paper epoch step requires scheduled batch_size")
+        self._scheduled_batch_id = batch_id
+        self._scheduled_batch_seed = batch_seed
+        self._scheduled_batch_size = batch_size
+
+    def _begin_next_epoch(self) -> PaperState:
+        """Advance lifecycle position without exposing state injection publicly."""
+
+        state = self.state
+        self._state = PaperState(
+            epoch=state.epoch + 1,
+            step=0,
+            current_skill=state.current_skill,
+            current_score=state.current_score,
+            best_skill=state.best_skill,
+            best_score=state.best_score,
+            meta_skill=state.meta_skill,
+        )
+        self._epoch_buffer = ()
+        return self._state
+
+    def _checkpoint_payload(self) -> dict[str, Any]:
+        state = self.state
+        return {
+            "state": {
+                "epoch": state.epoch,
+                "step": state.step,
+                "current_skill": state.current_skill,
+                "current_score": state.current_score.value,
+                "best_skill": state.best_skill,
+                "best_score": state.best_score.value,
+                "meta_skill": state.meta_skill,
+            },
+            "score_cache": {
+                key: score.value for key, score in sorted(self._score_cache.items())
+            },
+            "next_event_sequence": self._next_event_sequence,
+        }
+
+    def _restore_authenticated_checkpoint(self, payload: Mapping[str, Any]) -> None:
+        if self._state is not None or self._score_cache or self._next_event_sequence:
+            raise ValueError("paper fast loop restore requires a fresh instance")
+        if type(payload) is not dict or set(payload) != {
+            "state",
+            "score_cache",
+            "next_event_sequence",
+        }:
+            raise ValueError("invalid fast-loop checkpoint fields")
+        state_payload = payload["state"]
+        if type(state_payload) is not dict or set(state_payload) != {
+            "epoch",
+            "step",
+            "current_skill",
+            "current_score",
+            "best_skill",
+            "best_score",
+            "meta_skill",
+        }:
+            raise ValueError("invalid paper state checkpoint")
+        cache_payload = payload["score_cache"]
+        if type(cache_payload) is not dict:
+            raise ValueError("invalid score cache checkpoint")
+        score_cache: dict[str, SelectionScore] = {}
+        for skill_hash, raw_score in cache_payload.items():
+            if type(skill_hash) is not str or len(skill_hash) != 64:
+                raise ValueError("invalid score cache skill hash")
+            if type(raw_score) not in {int, float}:
+                raise ValueError("invalid score cache scalar")
+            score_cache[skill_hash] = SelectionScore(float(raw_score))
+        if type(payload["next_event_sequence"]) is not int or payload[
+            "next_event_sequence"
+        ] < 0:
+            raise ValueError("invalid checkpoint event sequence")
+        state = PaperState(
+            epoch=state_payload["epoch"],
+            step=state_payload["step"],
+            current_skill=state_payload["current_skill"],
+            current_score=SelectionScore(float(state_payload["current_score"])),
+            best_skill=state_payload["best_skill"],
+            best_score=SelectionScore(float(state_payload["best_score"])),
+            meta_skill=state_payload["meta_skill"],
+        )
+        if score_cache.get(_sha256(state.current_skill)) != state.current_score:
+            raise ValueError("checkpoint cache disagrees with current state")
+        if score_cache.get(_sha256(state.best_skill)) != state.best_score:
+            raise ValueError("checkpoint cache disagrees with best state")
+        self._state = state
+        self._score_cache = score_cache
+        self._next_event_sequence = payload["next_event_sequence"]
+
+    def _preview_external_candidate(
+        self,
+        candidate_skill: str,
+    ) -> _ExternalGatePreview:
+        state = self.state
+        if type(candidate_skill) is not str or not candidate_skill.strip():
+            raise ValueError("external candidate requires skill text")
+        working_cache = dict(self._score_cache)
+        candidate_hash = _sha256(candidate_skill)
+        candidate_score = working_cache.get(candidate_hash)
+        cache_hit = candidate_score is not None
+        if candidate_score is None:
+            candidate_score = self._controller.selection.score(candidate_skill)
+            working_cache[candidate_hash] = candidate_score
+        decision = strict_selection_decision(
+            current=state.current_score,
+            candidate=candidate_score,
+        )
+        return _ExternalGatePreview(
+            input_state=state,
+            candidate_skill_sha256=candidate_hash,
+            candidate_score=candidate_score,
+            accepted=decision.accepted,
+            delta=decision.delta,
+            cache_hit=cache_hit,
+            score_cache=tuple(sorted(working_cache.items())),
+        )
+
+    def _commit_external_candidate(
+        self,
+        candidate_skill: str,
+        *,
+        source: str,
+        proposal_event_type: AlgorithmEventType,
+        proposal_payload: Mapping[str, Any],
+        preview: _ExternalGatePreview,
+    ) -> ExternalGateResult:
+        if type(preview) is not _ExternalGatePreview:
+            raise ValueError("external candidate commit requires exact preview")
+        state = self.state
+        if (
+            state != preview.input_state
+            or _sha256(candidate_skill) != preview.candidate_skill_sha256
+        ):
+            raise ValueError("external candidate changed after selection preview")
+        if type(source) is not str or not source.strip():
+            raise ValueError("external candidate requires source")
+        if proposal_event_type is not AlgorithmEventType.SLOW_UPDATE_PROPOSED:
+            raise ValueError("unsupported external candidate proposal event")
+        candidate_hash = preview.candidate_skill_sha256
+        candidate_score = preview.candidate_score
+        events: list[AlgorithmEvent] = [
+            AlgorithmEvent(
+                sequence=self._next_event_sequence,
+                event_type=proposal_event_type,
+                epoch=state.epoch,
+                step=None,
+                payload=dict(proposal_payload),
+            )
+        ]
+        self._append_event(
+            events,
+            AlgorithmEventType.SELECTION_SCORED,
+            state,
+            state.step,
+            {
+                "candidate_skill_sha256": candidate_hash,
+                "candidate_score": candidate_score.value,
+                "current_score": state.current_score.value,
+                "cache_hit": preview.cache_hit,
+                "source": source,
+            },
+        )
+        if preview.accepted:
+            best_skill = state.best_skill
+            best_score = state.best_score
+            if candidate_score.value > best_score.value:
+                best_skill = candidate_skill
+                best_score = candidate_score
+            next_state = PaperState(
+                epoch=state.epoch,
+                step=state.step,
+                current_skill=candidate_skill,
+                current_score=candidate_score,
+                best_skill=best_skill,
+                best_score=best_score,
+                meta_skill=state.meta_skill,
+            )
+            event_type = AlgorithmEventType.CANDIDATE_ACCEPTED
+        else:
+            next_state = state
+            event_type = AlgorithmEventType.CANDIDATE_REJECTED
+        self._append_event(
+            events,
+            event_type,
+            state,
+            state.step,
+            {
+                "candidate_skill_sha256": candidate_hash,
+                "delta": preview.delta,
+                "source": source,
+            },
+        )
+        self._score_cache = dict(preview.score_cache)
+        self._state = next_state
+        self._next_event_sequence += len(events)
+        return ExternalGateResult(
+            state=next_state,
+            candidate_score=candidate_score,
+            accepted=preview.accepted,
+            delta=preview.delta,
+            cache_hit=preview.cache_hit,
+            events=tuple(events),
+        )
+
+    def _update_meta_skill(self, meta_skill: str) -> PaperState:
+        state = self.state
+        if type(meta_skill) is not str or not meta_skill.strip():
+            raise ValueError("meta skill must be non-empty")
+        self._state = PaperState(
+            epoch=state.epoch,
+            step=state.step,
+            current_skill=state.current_skill,
+            current_score=state.current_score,
+            best_skill=state.best_skill,
+            best_score=state.best_score,
+            meta_skill=meta_skill,
+        )
+        return self._state
+
     def run_step(
         self,
         *,
@@ -172,6 +480,9 @@ class PaperFastLoop:
         trajectories = self._controller.train.verify(
             train_evidence,
             current_skill=state.current_skill,
+            batch_id=self._scheduled_batch_id,
+            batch_seed=self._scheduled_batch_seed,
+            batch_size=self._scheduled_batch_size,
         )
         working_cache = dict(self._score_cache)
         current_hash = _sha256(state.current_skill)
@@ -189,7 +500,23 @@ class PaperFastLoop:
             AlgorithmEventType.STEP_STARTED,
             state,
             step,
-            {"edit_budget": edit_budget, "current_skill_sha256": current_hash},
+            {
+                "edit_budget": edit_budget,
+                "current_skill_sha256": current_hash,
+                **(
+                    {"train_batch_id": self._scheduled_batch_id}
+                    if self._scheduled_batch_id is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "train_batch_seed": self._scheduled_batch_seed,
+                        "train_batch_size": self._scheduled_batch_size,
+                    }
+                    if self._scheduled_batch_id is not None
+                    else {}
+                ),
+            },
         )
         failures = tuple(item for item in trajectories if not item["success"])
         successes = tuple(item for item in trajectories if item["success"])
@@ -203,9 +530,23 @@ class PaperFastLoop:
                 "failure_count": len(failures),
                 "success_count": len(successes),
                 "train_split_id": train_evidence.split_id,
+                **(
+                    {"train_batch_id": self._scheduled_batch_id}
+                    if self._scheduled_batch_id is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "train_batch_seed": self._scheduled_batch_seed,
+                        "train_batch_size": self._scheduled_batch_size,
+                    }
+                    if self._scheduled_batch_id is not None
+                    else {}
+                ),
             },
         )
 
+        observed_failure_patterns: list[ObservedFailurePattern] = []
         failure_proposals = self._reflect_group(
             state=state,
             step=step,
@@ -215,6 +556,7 @@ class PaperFastLoop:
             edit_budget=edit_budget,
             call_prefix=call_prefix,
             events=events,
+            observed_failure_patterns=observed_failure_patterns,
         )
         success_proposals = self._reflect_group(
             state=state,
@@ -225,6 +567,7 @@ class PaperFastLoop:
             edit_budget=edit_budget,
             call_prefix=call_prefix,
             events=events,
+            observed_failure_patterns=observed_failure_patterns,
         )
 
         try:
@@ -283,6 +626,7 @@ class PaperFastLoop:
                 error=error,
                 events=events,
                 working_cache=working_cache,
+                failure_patterns=tuple(observed_failure_patterns),
             )
 
         apply_result = apply_paper_patch(state.current_skill, ranked_edits)
@@ -378,6 +722,7 @@ class PaperFastLoop:
             ranked_edits=ranked_edits,
             apply_result=apply_result,
             events=tuple(events),
+            failure_patterns=tuple(observed_failure_patterns),
         )
         result.replay()
         self._score_cache = working_cache
@@ -396,6 +741,7 @@ class PaperFastLoop:
         edit_budget: int,
         call_prefix: str,
         events: list[AlgorithmEvent],
+        observed_failure_patterns: list[ObservedFailurePattern],
     ) -> tuple[ParsedPatchResponse, ...]:
         proposals: list[ParsedPatchResponse] = []
         stage = (
@@ -438,6 +784,7 @@ class PaperFastLoop:
                 edit_id_prefix=f"{call_id}-edit",
                 expected_batch_size=len(minibatch),
             )
+            observed_failure_patterns.extend(parsed.failure_patterns)
             self._append_event(
                 events,
                 event_type,
@@ -700,6 +1047,7 @@ class PaperFastLoop:
         error: _SemanticStageExhausted,
         events: list[AlgorithmEvent],
         working_cache: dict[str, SelectionScore],
+        failure_patterns: tuple[ObservedFailurePattern, ...],
     ) -> FastStepResult:
         apply_result = apply_paper_patch(state.current_skill, ())
         next_state = PaperState(
@@ -732,6 +1080,7 @@ class PaperFastLoop:
             ranked_edits=(),
             apply_result=apply_result,
             events=tuple(events),
+            failure_patterns=failure_patterns,
             skipped_stage=error.stage,
         )
         result.replay()
@@ -752,7 +1101,13 @@ class PaperFastLoop:
     ) -> OptimizerResponse:
         try:
             prompt = json.dumps(
-                prompt_payload,
+                {
+                    **prompt_payload,
+                    "epoch_buffer": [
+                        record.to_optimizer_payload()
+                        for record in self._epoch_buffer
+                    ],
+                },
                 ensure_ascii=False,
                 allow_nan=False,
                 sort_keys=True,
@@ -783,6 +1138,9 @@ class PaperFastLoop:
                 "semantic_max_attempts": (
                     self._retry_policy.max_semantic_attempts
                 ),
+                "train_batch_id": self._scheduled_batch_id,
+                "train_batch_seed": self._scheduled_batch_seed,
+                "train_batch_size": self._scheduled_batch_size,
             },
         )
         response = self._controller.optimizer_backend.complete(request)

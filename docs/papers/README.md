@@ -45,6 +45,7 @@ e4ea6a6771e797ef820cdd8bfea64c57e0481065
 51d0a4d96e88558c84dee637f98e24e3fb2d1547
 ```
 
-`source-lock.json` currently records no reused upstream files. Add a path and
-SHA256 there before porting any official source or prompt. A newer release
-requires an explicit re-pin; never use upstream `main` as an implicit source.
+`source-lock.json` records the eight byte-identical v0.2.0 prompts reused by
+the paper fast and epoch loops. Add a path and SHA256 there before porting any
+additional official source or prompt. A newer release requires an explicit
+re-pin; never use upstream `main` as an implicit source.

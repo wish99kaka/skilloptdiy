@@ -15,13 +15,15 @@ _PROMPT_NAMES = {
     OptimizerStage.MERGE_SUCCESS: "merge_success.md",
     OptimizerStage.MERGE_FINAL_FAILURE_PRIORITIZED: "merge_final.md",
     OptimizerStage.RANK_TOP_L: "ranking.md",
+    OptimizerStage.PROPOSE_SLOW_UPDATE: "slow_update.md",
+    OptimizerStage.UPDATE_META_SKILL: "meta_skill.md",
 }
 
 
 def load_optimizer_prompt(stage: OptimizerStage) -> str:
     """Load the locked prompt for one fast-loop stage.
 
-    Six stage prompts are byte-identical v0.2.0 resources. ``refine.md`` is
+    Eight stage prompts are byte-identical v0.2.0 resources. ``refine.md`` is
     the explicit local resolution for the refinement loop missing upstream.
     """
 

@@ -1,6 +1,6 @@
 # SkillOpt Current State
 
-Date: 2026-07-15
+Date: 2026-07-16
 
 ## Objective
 
@@ -72,6 +72,21 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
   skill-hash cache private, and preserves separate current/best state. The
   refinement prompt is an explicit local resolution of a paper requirement
   absent from official v0.2.0, not an upstream reuse claim.
+- M4 paper epoch loop: `PaperEpochPlan` binds every cosine edit budget and
+  train batch ID/seed/size to the frozen profile/split manifest; signed train
+  responses must echo that schedule and contain exactly the planned trajectory
+  count. `PaperEpochLoop` privately owns current/best
+  state, score cache, contiguous events, epoch snapshots, and an epoch-local
+  buffer of observed train failures plus rejected edits/scalar deltas. HMAC
+  checkpoints restore those values exactly, and fake-backend crash/resume
+  traces match uninterrupted runs. Epoch 1 emits explicit slow/meta skips;
+  epoch 2 onward compares the same deterministic 20-task train sample under
+  adjacent epoch skills, builds improvement/regression/persistent-failure/
+  stable-success groups, strictly selection-gates the protected slow field,
+  and keeps meta guidance optimizer-only for future prompts. The two official
+  v0.2.0 slow/meta prompts are bundled under locked hashes. M5 accumulation,
+  autonomous LR, rewrite mode, concurrency hardening, and complete artifact
+  lineage remain intentionally out of this milestone.
 - External editor path through `examples/coding/openai_compatible_skill_editor.py`.
 - Executive optimizer with bounded atomic edits, learning-rate schedule, rejected buffer, validation gate, slow update, meta skill, checkpoint, and early stop.
 - `coding-hidden-v2` builder/validator with contract tags and contract macro accuracy.
@@ -154,14 +169,15 @@ evidence, not as a paper-faithful or held-out baseline-superiority claim.
 ## Main Gap Versus Paper
 
 The contract-aware same-target loop and its one locked attempt are complete.
-The paper contract, runtime firewall, and one-step fast engine are now enforced;
-the epoch engine and evidence campaign have not begun.
+The paper contract, runtime firewall, fast engine, and default epoch lifecycle
+are now enforced; mechanism completion and the evidence campaign have not begun.
 
 Highest-impact remaining gaps:
 
 1. The current executive algorithm is not paper-faithful: selection contract diagnostics and benchmark-specific mechanisms feed optimization, merge/ranking semantics differ, buffer and slow/meta lifecycles differ, and the paper-default run was not exercised.
-2. The paper fast step exists, but epoch-local buffers, scheduling, deterministic
-   resume, and the epoch-2 slow/meta lifecycle are still missing.
+2. M5 mechanisms remain: accumulation, autonomous LR, rewrite mode, stable
+   concurrency, and complete artifact lineage. M6 zero-cost acceptance is also
+   still required before any paid paper-faithful experiment.
 3. The consumed `coding-hidden-v2` split cannot support a future paper-faithful held-out claim; a fresh split or official benchmark is required.
 4. The local matrix lacks several paper baselines, ablations, benchmark/model/harness breadth, and target-agent token accounting.
 
@@ -435,13 +451,11 @@ Completed:
 
 Active next work:
 
-1. Treat WP0/M0 as complete: the source lock pins the paper and Microsoft
-   SkillOpt `v0.2.0`, the default test/CI gate is reproducible, incompatible
-   executive editors fail fast, and historical operator docs are audit-only.
-2. Treat M3/WP2 as complete. Execute M4/WP3 next: persist epoch-local state,
-   scheduler/cache state, and an exact crash/resume path before adding real
-   slow/meta updates from epoch 2.
-3. Keep paid work blocked until WP4 zero-cost conformance passes.
+1. Treat M0–M4 as complete through the default patch/cosine epoch lifecycle.
+2. Execute M5 next: add accumulation, autonomous LR, rewrite mode, stable
+   concurrency, and complete artifact lineage as independently tested
+   mechanisms without weakening the M0–M4 contracts.
+3. Keep paid work blocked until M6/WP4 zero-cost conformance passes.
 
 ## Practical Review Rule
 

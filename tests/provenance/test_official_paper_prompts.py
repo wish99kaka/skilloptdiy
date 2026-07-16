@@ -32,6 +32,14 @@ EXPECTED = {
         "skillopt/prompts/ranking.md",
         "8bf37725b7b328d8d54af7a8fb173179bdd0f02b57399ed2cc7a5b5d25edea8a",
     ),
+    OptimizerStage.PROPOSE_SLOW_UPDATE: (
+        "skillopt/prompts/slow_update.md",
+        "7f6f97d2283a370ad072a91ad61e152551f4f4eb4f519c9a1c5c60679b4782f2",
+    ),
+    OptimizerStage.UPDATE_META_SKILL: (
+        "skillopt/prompts/meta_skill.md",
+        "b2bab7f7635cd2a94348de6adf15ceaa247ddabd0a2a8bb7c53eab5cfca7deba",
+    ),
 }
 
 

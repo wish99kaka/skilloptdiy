@@ -5,10 +5,23 @@ from textskill_optimizer.paper.patches import (
     SLOW_UPDATE_END,
     SLOW_UPDATE_START,
     apply_paper_patch,
+    read_slow_update_field,
+    write_slow_update_field,
 )
 
 
 class PaperPatchApplicationTests(unittest.TestCase):
+    def test_epoch_writer_is_the_only_path_that_replaces_protected_guidance(self) -> None:
+        initial = write_slow_update_field("# Skill\n", "first guidance")
+        updated = write_slow_update_field(initial, "second guidance")
+
+        self.assertEqual(updated.count(SLOW_UPDATE_START), 1)
+        self.assertEqual(updated.count(SLOW_UPDATE_END), 1)
+        self.assertEqual(read_slow_update_field(updated), "second guidance")
+        self.assertNotIn("first guidance", updated)
+        with self.assertRaisesRegex(ValueError, "exactly one complete"):
+            write_slow_update_field(updated + SLOW_UPDATE_START, "bad")
+
     def test_all_four_operations_apply_sequentially_with_one_report_each(self) -> None:
         initial = "# Skill\n\n## Rules\n\n- old\n- remove me\n"
         edits = (

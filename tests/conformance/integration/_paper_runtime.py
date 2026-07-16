@@ -27,6 +27,9 @@ def build_runtime(
     invalid_selection_after_first: bool = False,
     failure_count: int = 1,
     success_count: int = 1,
+    longitudinal_fixture: bool = False,
+    slow_selection_accept: bool = False,
+    truncate_scheduled_batch: bool = False,
 ):
     trajectories = [
         {
@@ -50,16 +53,60 @@ def build_runtime(
         for index in range(1, success_count + 1)
     ]
     train_path = root / "train.py"
-    train_key, train_sha = _write_signed_controller(
-        train_path,
-        controller_id="train-owner",
-        payload_source=f"""
+    if longitudinal_fixture:
+        train_payload_source = """
+has_update = "accepted rule" in request["skill_text"]
+trajectories = []
+per_category = request.get("batch_size", 20) // 4
+for category in ("improvement", "regression", "persistent", "stable"):
+    for index in range(1, per_category + 1):
+        if category == "improvement":
+            success = has_update
+        elif category == "regression":
+            success = not has_update
+        elif category == "persistent":
+            success = False
+        else:
+            success = True
+        trajectories.append({
+            "task_id": f"{category}-{index}",
+            "task_input": f"question {category} {index}",
+            "output": "right" if success else "wrong",
+            "score": 1.0 if success else 0.0,
+            "success": success,
+            "trace": [f"{category} outcome"],
+        })
+payload = {
+    "split_id": request["split_id"],
+    "split_manifest_sha256": request["split_manifest_sha256"],
+    "trajectories": trajectories,
+}
+if "batch_id" in request:
+    payload["batch_id"] = request["batch_id"]
+    payload["batch_seed"] = request["batch_seed"]
+    payload["batch_size"] = request["batch_size"]
+"""
+    else:
+        train_payload_source = f"""
 payload = {{
     "split_id": request["split_id"],
     "split_manifest_sha256": request["split_manifest_sha256"],
     "trajectories": {trajectories!r},
 }}
-""",
+if "batch_id" in request:
+    payload["batch_id"] = request["batch_id"]
+    payload["batch_seed"] = request["batch_seed"]
+    payload["batch_size"] = request["batch_size"]
+"""
+    if truncate_scheduled_batch:
+        train_payload_source += """
+if "batch_id" in request:
+    payload["trajectories"] = payload["trajectories"][:-1]
+"""
+    train_key, train_sha = _write_signed_controller(
+        train_path,
+        controller_id="train-owner",
+        payload_source=train_payload_source,
     )
     selection_path = root / "selection.py"
     if invalid_selection_after_first:
@@ -78,6 +125,12 @@ payload = (
 """
     elif invalid_selection:
         selection_payload = 'payload = {"score": 0.8, "forbidden": "diagnostics"}'
+    elif slow_selection_accept:
+        selection_payload = (
+            'payload = {"score": 0.9 if "durable but tied guidance" '
+            'in request["skill_text"] else (0.8 if "accepted rule" '
+            'in request["skill_text"] else 0.5)}'
+        )
     else:
         selection_payload = (
             'payload = {"score": 0.8 if "accepted rule" '

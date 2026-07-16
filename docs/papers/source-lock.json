@@ -38,6 +38,14 @@
       {
         "path": "skillopt/prompts/ranking.md",
         "sha256": "8bf37725b7b328d8d54af7a8fb173179bdd0f02b57399ed2cc7a5b5d25edea8a"
+      },
+      {
+        "path": "skillopt/prompts/slow_update.md",
+        "sha256": "7f6f97d2283a370ad072a91ad61e152551f4f4eb4f519c9a1c5c60679b4782f2"
+      },
+      {
+        "path": "skillopt/prompts/meta_skill.md",
+        "sha256": "b2bab7f7635cd2a94348de6adf15ceaa247ddabd0a2a8bb7c53eab5cfca7deba"
       }
     ]
   },
