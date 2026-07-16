@@ -96,6 +96,15 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
   content-addressed lineage now links plans, evidence, every optimizer
   request/response, update/apply artifacts, skills, scalar scores, slow/meta
   artifacts, and events; authenticated resume restores it exactly.
+- M6 zero-cost acceptance: a checked-in Algorithm 1 golden trace locks the
+  scripted optimizer/event/update sequence, and a complete prompt snapshot
+  covers all sixteen official prompts plus the two local refinement
+  resolutions. The provenance linter cross-checks pinned paper/reference
+  identities, upstream deviation registration, snapshot metadata, and bundled
+  bytes. `scripts/run_paper_zero_cost_gate.py` scrubs API credentials and runs
+  the conformance/provenance suites as one CI gate; only a full pass emits
+  a clean-commit-bound `paid_development_authorized=true`, while `--audit-only`
+  and dirty worktrees cannot authorize it.
 - External editor path through `examples/coding/openai_compatible_skill_editor.py`.
 - Executive optimizer with bounded atomic edits, learning-rate schedule, rejected buffer, validation gate, slow update, meta skill, checkpoint, and early stop.
 - `coding-hidden-v2` builder/validator with contract tags and contract macro accuracy.
@@ -179,15 +188,14 @@ evidence, not as a paper-faithful or held-out baseline-superiority claim.
 
 The contract-aware same-target loop and its one locked attempt are complete.
 The paper contract, runtime firewall, fast engine, and default epoch lifecycle
-plus all independent M5 mechanisms are now enforced. The zero-cost acceptance
-gate and evidence campaign have not begun.
+plus all independent M5 mechanisms are now enforced. The M6 zero-cost gate is
+green; the development evidence campaign has not begun.
 
 Highest-impact remaining gaps:
 
 1. The current executive algorithm is not paper-faithful: selection contract diagnostics and benchmark-specific mechanisms feed optimization, merge/ranking semantics differ, buffer and slow/meta lifecycles differ, and the paper-default run was not exercised.
-2. M6 zero-cost acceptance remains: golden traces, prompt snapshots, static
-   import/data audits, patch replay, and provenance/lineage linting must pass
-   before any paid paper-faithful experiment.
+2. M7 still requires a cheap SearchQA full-call-graph smoke before any pilot;
+   the M6 receipt authorizes development work but is not empirical evidence.
 3. The consumed `coding-hidden-v2` split cannot support a future paper-faithful held-out claim; a fresh split or official benchmark is required.
 4. The local matrix lacks several paper baselines, ablations, benchmark/model/harness breadth, and target-agent token accounting.
 
@@ -461,10 +469,10 @@ Completed:
 
 Active next work:
 
-1. Treat M0–M5 as complete through the default patch/cosine lifecycle and the
-   independently tested mechanism variants.
-2. Execute M6/WP4 next as one zero-cost conformance gate.
-3. Keep paid work blocked until that gate passes.
+1. Treat M0–M6 as complete through the zero-cost conformance receipt.
+2. Execute the M7 cheap SearchQA full-call-graph smoke next, with a preregistered
+   cap and only open development data.
+3. Do not treat the M6 receipt or any development smoke as held-out evidence.
 
 ## Practical Review Rule
 

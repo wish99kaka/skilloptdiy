@@ -8,6 +8,20 @@ permissions:
   contents: read
 
 jobs:
+  paper-zero-cost:
+    name: Paper zero-cost conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install project and development dependencies
+        run: python -m pip install --editable ".[dev]"
+      - name: Run M6 paper gate without credentials
+        run: python scripts/run_paper_zero_cost_gate.py
+
   pytest:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

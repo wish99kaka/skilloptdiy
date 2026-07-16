@@ -200,6 +200,13 @@ class PaperFastLoopTests(unittest.TestCase):
                 PaperFastLoop(controller, profile=forged)
 
     def test_fake_backend_trace_matches_algorithm_one_and_replays_exactly(self) -> None:
+        golden = json.loads(
+            (
+                Path(__file__).parents[1]
+                / "golden"
+                / "algorithm1-fast-loop-v1.json"
+            ).read_text(encoding="utf-8")
+        )
         backend = GoldenFastLoopBackend()
         with tempfile.TemporaryDirectory() as tmp:
             controller, train = build_runtime(Path(tmp), backend)
@@ -215,43 +222,26 @@ class PaperFastLoopTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            [request.stage for request in backend.requests],
-            [
-                OptimizerStage.REFLECT_FAILURE,
-                OptimizerStage.REFINE,
-                OptimizerStage.REFINE,
-                OptimizerStage.REFINE,
-                OptimizerStage.REFLECT_SUCCESS,
-                OptimizerStage.REFINE,
-                OptimizerStage.REFINE,
-                OptimizerStage.REFINE,
-                OptimizerStage.MERGE_FAILURE,
-                OptimizerStage.MERGE_SUCCESS,
-                OptimizerStage.MERGE_FINAL_FAILURE_PRIORITIZED,
-                OptimizerStage.RANK_TOP_L,
-            ],
-        )
-        self.assertEqual(
-            [event.event_type for event in result.events],
-            [
-                AlgorithmEventType.STEP_STARTED,
-                AlgorithmEventType.ROLLOUT_COLLECTED,
-                AlgorithmEventType.FAILURE_REFLECTED,
-                AlgorithmEventType.ANALYST_REFINED,
-                AlgorithmEventType.ANALYST_REFINED,
-                AlgorithmEventType.ANALYST_REFINED,
-                AlgorithmEventType.SUCCESS_REFLECTED,
-                AlgorithmEventType.ANALYST_REFINED,
-                AlgorithmEventType.ANALYST_REFINED,
-                AlgorithmEventType.ANALYST_REFINED,
-                AlgorithmEventType.MERGE_FAILURE,
-                AlgorithmEventType.MERGE_SUCCESS,
-                AlgorithmEventType.MERGE_FINAL_FAILURE_PRIORITIZED,
-                AlgorithmEventType.RANK_TOP_L,
-                AlgorithmEventType.PATCH_APPLIED,
-                AlgorithmEventType.SELECTION_SCORED,
-                AlgorithmEventType.CANDIDATE_ACCEPTED,
-            ],
+            {
+                "schema_version": "algorithm1-fast-loop-golden-v1",
+                "optimizer_stages": [
+                    request.stage.value for request in backend.requests
+                ],
+                "event_types": [
+                    event.event_type.value for event in result.events
+                ],
+                "ranked_updates": [
+                    {
+                        "operation": edit.operation.value,
+                        "content": edit.content,
+                        "support_count": edit.support_count,
+                        "source_type": edit.source_type.value,
+                    }
+                    for edit in result.ranked_edits
+                ],
+                "final_score": result.state.current_score.value,
+            },
+            golden,
         )
         self.assertEqual(result.state.current_score.value, 0.8)
         self.assertEqual(result.state.best_skill, result.state.current_skill)

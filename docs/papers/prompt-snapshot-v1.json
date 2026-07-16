@@ -1,0 +1,186 @@
+{
+  "schema_version": "paper-prompt-snapshot-v1",
+  "official_reference_commit": "e4ea6a6771e797ef820cdd8bfea64c57e0481065",
+  "prompts": [
+    {
+      "route": "patch:reflect_failure",
+      "stage": "reflect_failure",
+      "update_mode": "patch",
+      "bundled_path": "textskill_optimizer/paper/prompts/analyst_error.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/analyst_error.md",
+      "deviation_id": null,
+      "sha256": "40eaf561c7fdbdfc1c7a1febd9f7c3540270ca6d5e7e0a8798c7c90b8d303200"
+    },
+    {
+      "route": "patch:reflect_success",
+      "stage": "reflect_success",
+      "update_mode": "patch",
+      "bundled_path": "textskill_optimizer/paper/prompts/analyst_success.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/analyst_success.md",
+      "deviation_id": null,
+      "sha256": "0ffc8f85e13af2b14e1b9f3307a44d30ecf60e9d803ccb9190fdd9785e43fabc"
+    },
+    {
+      "route": "patch:refine",
+      "stage": "refine",
+      "update_mode": "patch",
+      "bundled_path": "textskill_optimizer/paper/prompts/refine.md",
+      "origin": "local_resolution",
+      "source_path": null,
+      "deviation_id": "analyst-refinement-loop",
+      "sha256": "2650b8bf3d5aabc2bf5d70b32dabe717be89affcf8d7984c470cf59c43925676"
+    },
+    {
+      "route": "patch:merge_failure",
+      "stage": "merge_failure",
+      "update_mode": "patch",
+      "bundled_path": "textskill_optimizer/paper/prompts/merge_failure.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/merge_failure.md",
+      "deviation_id": null,
+      "sha256": "071313895da226840164ccda6e7f01d5f849ea128037d3f337cddab66ae799db"
+    },
+    {
+      "route": "patch:merge_success",
+      "stage": "merge_success",
+      "update_mode": "patch",
+      "bundled_path": "textskill_optimizer/paper/prompts/merge_success.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/merge_success.md",
+      "deviation_id": null,
+      "sha256": "6b816bcf5526d31164b779921f3c8c847541bf92fbe26c6a38b555eb3b753712"
+    },
+    {
+      "route": "patch:merge_final_failure_prioritized",
+      "stage": "merge_final_failure_prioritized",
+      "update_mode": "patch",
+      "bundled_path": "textskill_optimizer/paper/prompts/merge_final.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/merge_final.md",
+      "deviation_id": null,
+      "sha256": "b2c7b452032fbbe3b223e877b766ea6202775d685c3b32e68956a402e775b84b"
+    },
+    {
+      "route": "patch:rank_top_l",
+      "stage": "rank_top_l",
+      "update_mode": "patch",
+      "bundled_path": "textskill_optimizer/paper/prompts/ranking.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/ranking.md",
+      "deviation_id": null,
+      "sha256": "8bf37725b7b328d8d54af7a8fb173179bdd0f02b57399ed2cc7a5b5d25edea8a"
+    },
+    {
+      "route": "rewrite_from_suggestions:reflect_failure",
+      "stage": "reflect_failure",
+      "update_mode": "rewrite_from_suggestions",
+      "bundled_path": "textskill_optimizer/paper/prompts/analyst_error_rewrite.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/analyst_error_rewrite.md",
+      "deviation_id": null,
+      "sha256": "c393358b2be63d49bc8400944f17bcfb45f58aed5959cf6a46c2e1c1caefcd1b"
+    },
+    {
+      "route": "rewrite_from_suggestions:reflect_success",
+      "stage": "reflect_success",
+      "update_mode": "rewrite_from_suggestions",
+      "bundled_path": "textskill_optimizer/paper/prompts/analyst_success_rewrite.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/analyst_success_rewrite.md",
+      "deviation_id": null,
+      "sha256": "758bfe107d15ba1b5318f7191ea9e965fb09982b12599d62fee9db0d823f22f0"
+    },
+    {
+      "route": "rewrite_from_suggestions:refine",
+      "stage": "refine",
+      "update_mode": "rewrite_from_suggestions",
+      "bundled_path": "textskill_optimizer/paper/prompts/refine_rewrite.md",
+      "origin": "local_resolution",
+      "source_path": null,
+      "deviation_id": "analyst-refinement-loop",
+      "sha256": "3587d377c6b694bde270ae475423025551fc81906c679be4f9dbff31d0c51c7d"
+    },
+    {
+      "route": "rewrite_from_suggestions:merge_failure",
+      "stage": "merge_failure",
+      "update_mode": "rewrite_from_suggestions",
+      "bundled_path": "textskill_optimizer/paper/prompts/merge_failure_rewrite.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/merge_failure_rewrite.md",
+      "deviation_id": null,
+      "sha256": "e9cd2289d8515bca4561e52d3c8da14a2fe97d1b2e77d50f0d34f2fb257326c1"
+    },
+    {
+      "route": "rewrite_from_suggestions:merge_success",
+      "stage": "merge_success",
+      "update_mode": "rewrite_from_suggestions",
+      "bundled_path": "textskill_optimizer/paper/prompts/merge_success_rewrite.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/merge_success_rewrite.md",
+      "deviation_id": null,
+      "sha256": "2b293d9a16da199cade8bdade560b12553577ad66aacb0f9de3ae979aa150ab7"
+    },
+    {
+      "route": "rewrite_from_suggestions:merge_final_failure_prioritized",
+      "stage": "merge_final_failure_prioritized",
+      "update_mode": "rewrite_from_suggestions",
+      "bundled_path": "textskill_optimizer/paper/prompts/merge_final_rewrite.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/merge_final_rewrite.md",
+      "deviation_id": null,
+      "sha256": "6a79e19eebe2fbbe20f93a6b864c7c157388bbae168980154c0cdac452bbdfe4"
+    },
+    {
+      "route": "rewrite_from_suggestions:rank_top_l",
+      "stage": "rank_top_l",
+      "update_mode": "rewrite_from_suggestions",
+      "bundled_path": "textskill_optimizer/paper/prompts/ranking_rewrite.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/ranking_rewrite.md",
+      "deviation_id": null,
+      "sha256": "2ff8c755188704352cb7dd5c57bbce66c506145a5a5cd212b8881bd09d608031"
+    },
+    {
+      "route": "rewrite_from_suggestions:rewrite_skill",
+      "stage": "rewrite_skill",
+      "update_mode": "rewrite_from_suggestions",
+      "bundled_path": "textskill_optimizer/paper/prompts/rewrite_skill.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/rewrite_skill.md",
+      "deviation_id": null,
+      "sha256": "2da412ee1d92ab32e59f8a33e2816a2c315edef5e2906d7628d8d093ae0dc68a"
+    },
+    {
+      "route": "common:decide_learning_rate",
+      "stage": "decide_learning_rate",
+      "update_mode": "common",
+      "bundled_path": "textskill_optimizer/paper/prompts/lr_autonomous.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/lr_autonomous.md",
+      "deviation_id": null,
+      "sha256": "667c78c7873a28fae0e6f47c5c6ed556d76dfe337c74da986757c9e4fadb1f0e"
+    },
+    {
+      "route": "common:propose_slow_update",
+      "stage": "propose_slow_update",
+      "update_mode": "common",
+      "bundled_path": "textskill_optimizer/paper/prompts/slow_update.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/slow_update.md",
+      "deviation_id": null,
+      "sha256": "7f6f97d2283a370ad072a91ad61e152551f4f4eb4f519c9a1c5c60679b4782f2"
+    },
+    {
+      "route": "common:update_meta_skill",
+      "stage": "update_meta_skill",
+      "update_mode": "common",
+      "bundled_path": "textskill_optimizer/paper/prompts/meta_skill.md",
+      "origin": "official",
+      "source_path": "skillopt/prompts/meta_skill.md",
+      "deviation_id": null,
+      "sha256": "b2bab7f7635cd2a94348de6adf15ceaa247ddabd0a2a8bb7c53eab5cfca7deba"
+    }
+  ]
+}

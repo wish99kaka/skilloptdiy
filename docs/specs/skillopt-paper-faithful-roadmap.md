@@ -315,8 +315,8 @@ in Section 13 are the only executable plan; this table is only a status index.
 | 4. Epoch state | Completed | M4 / WP3 |
 | 5. Slow/meta | Completed | M4 / WP3 |
 | 6. Mechanism completeness | Completed | M5 / WP3 |
-| 7. Zero-cost conformance | Next | WP4 |
-| 8–11. Development evidence | Blocked by Phase 7 | WP5 |
+| 7. Zero-cost conformance | Completed | WP4 |
+| 8–11. Development evidence | Next | WP5 |
 | 12–13. Held-out evidence and breadth | Blocked by Phase 11 | WP6 |
 
 ## 10. Conformance Test Program
@@ -606,7 +606,7 @@ resume equivalence, slow gating, and meta visibility.
 
 #### WP4 — Zero-cost conformance
 
-Dependencies: WP3.
+Status: completed on 2026-07-16. Dependencies: WP3.
 
 Run golden traces, static import and prompt scans, selection/test data-access
 audits, patch replay, upstream-deviation checks, lineage validation, and claim
@@ -679,8 +679,8 @@ executable plan.
   resume, slow, and meta lifecycle tests pass.
 - **M5 — Mechanisms complete:** accumulation, autonomous LR, rewrite mode,
   concurrency, and full artifact lineage pass independent tests.
-- **M6 — Zero-cost acceptance:** WP4 passes; paid experiments remain blocked
-  until this gate is green.
+- **M6 — Zero-cost acceptance:** WP4 passes and emits a clean-commit-bound
+  receipt; this authorizes M7 development work but is not empirical evidence.
 - **M7 — Development evidence:** WP5's smoke, pilot, three-seed baselines, and
   registered ablations pass without protocol drift.
 - **M8 — Final evidence:** WP6 evaluates all frozen candidates once on a new

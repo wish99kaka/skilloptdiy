@@ -49,3 +49,17 @@ e4ea6a6771e797ef820cdd8bfea64c57e0481065
 the paper fast and epoch loops. Add a path and SHA256 there before porting any
 additional official source or prompt. A newer release requires an explicit
 re-pin; never use upstream `main` as an implicit source.
+
+`prompt-snapshot-v1.json` also records the two explicit local refinement
+resolutions. Run the complete zero-external-call acceptance gate with:
+
+```bash
+python3 scripts/run_paper_zero_cost_gate.py
+```
+
+The command scrubs API credentials, runs only `tests/conformance` and
+`tests/provenance`, and emits a machine-readable receipt only after the locked
+sources, golden trace, static firewalls, replay, lineage, and claim checks pass.
+Authorization also requires a clean Git commit so the receipt identifies the
+exact code under test. `--audit-only` validates provenance but never authorizes
+paid development.

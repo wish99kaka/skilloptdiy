@@ -1,0 +1,45 @@
+{
+  "schema_version": "algorithm1-fast-loop-golden-v1",
+  "optimizer_stages": [
+    "reflect_failure",
+    "refine",
+    "refine",
+    "refine",
+    "reflect_success",
+    "refine",
+    "refine",
+    "refine",
+    "merge_failure",
+    "merge_success",
+    "merge_final_failure_prioritized",
+    "rank_top_l"
+  ],
+  "event_types": [
+    "step_started",
+    "rollout_collected",
+    "failure_reflected",
+    "analyst_refined",
+    "analyst_refined",
+    "analyst_refined",
+    "success_reflected",
+    "analyst_refined",
+    "analyst_refined",
+    "analyst_refined",
+    "merge_failure",
+    "merge_success",
+    "merge_final_failure_prioritized",
+    "rank_top_l",
+    "patch_applied",
+    "selection_scored",
+    "candidate_accepted"
+  ],
+  "ranked_updates": [
+    {
+      "operation": "append",
+      "content": "- accepted rule",
+      "support_count": 3,
+      "source_type": "failure"
+    }
+  ],
+  "final_score": 0.8
+}

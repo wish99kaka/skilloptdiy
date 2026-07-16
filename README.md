@@ -50,30 +50,15 @@ The one-attempt `coding-hidden-v2` locked test was consumed on 2026-07-13. Its
 must not be rerun or relabeled as paper-faithful. A future paper-faithful
 held-out claim requires a new untouched split or an official paper benchmark.
 
-M1 freezes the paper contract before the engine exists. The bundled JSON
-profile rejects both extension controls and unregistered deviations, claim
-lineage is hash-bound and validated against a versioned schema, and the
-consumed-split registry blocks relabeling old evidence. The public
-`assess_paper_profile(...)` and
-`assess_paper_run(...)` functions perform these checks without constructing a
-model backend. M2 adds the runtime firewall: a content-addressed registry binds
-each dataset-owning executable/runner launch chain and response key to exactly
-one train, selection, or final-test role and one hash-verified split manifest;
-signed train responses are reverified at the optimizer
-seam, selection exposes one normalized scalar, and final test requires a
-revalidated frozen plan bound to the real runner/scorer/harness bytes. The
-paper package uses lazy exports so a cold final-only import does not execute
-optimization modules. M3 adds a replayable paper fast step: the six official
-v0.2.0 reflection/merge/ranking prompts are hash-locked, optimizer responses
-are schema- and operation-validated, failure and success minibatches receive
-real semantic refinement, profile-sized hierarchical failure/success merges,
-the failure-prioritized final merge, and model top-L ranking run in Algorithm 1
-order. Semantic merge/rank failures follow a recorded retry policy and then
-skip unchanged; successful patches pass through a strict cached scalar gate
-whose initial score comes from the registered selection owner, while current
-and best state remain separate. The
-epoch loop is the next milestone; this engine is still intentionally absent
-from the CLI.
+M1–M2 freeze the paper contract and enforce the runtime data firewall. M3 adds
+the replayable Algorithm 1 fast loop. M4 owns the deterministic epoch lifecycle,
+authenticated resume, slow update, and optimizer-only meta guidance. M5 adds
+independently tested accumulation, analyst concurrency, autonomous learning
+rate, rewrite mode, and complete content-addressed artifact lineage. M6 locks
+the complete prompt/source bundle and golden trace behind a zero-external-call,
+clean-commit acceptance gate. The paper engine remains intentionally absent
+from the public CLI until M7 adds and validates the SearchQA development
+execution path.
 
 Read `docs/specs/skillopt-paper-faithful-roadmap.md` first. It defines source
 precedence, protocol isolation, the official-code reuse boundary, conformance

@@ -101,6 +101,18 @@
         "path": "skillopt/engine/trainer.py",
         "observation": "max_analyst_rounds is loaded and logged but is not used to execute refinement rounds"
       },
+      "local_resolution_files": [
+        {
+          "path": "textskill_optimizer/paper/prompts/refine.md",
+          "route": "patch:refine",
+          "sha256": "2650b8bf3d5aabc2bf5d70b32dabe717be89affcf8d7984c470cf59c43925676"
+        },
+        {
+          "path": "textskill_optimizer/paper/prompts/refine_rewrite.md",
+          "route": "rewrite_from_suggestions:refine",
+          "sha256": "3587d377c6b694bde270ae475423025551fc81906c679be4f9dbff31d0c51c7d"
+        }
+      ],
       "paper_resolution": "Paper mode must execute real semantic teacher refinement, capped at three rounds."
     }
   ],

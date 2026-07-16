@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from importlib.resources import files
 
 from .backend import OptimizerStage
@@ -35,6 +36,31 @@ _COMMON_PROMPTS = {
 }
 
 
+@dataclass(frozen=True)
+class OptimizerPromptRoute:
+    stage: OptimizerStage
+    update_mode: str
+    bundled_name: str
+
+    @property
+    def route(self) -> str:
+        return f"{self.update_mode}:{self.stage.value}"
+
+
+def optimizer_prompt_routes() -> tuple[OptimizerPromptRoute, ...]:
+    """Return every executable paper prompt route in canonical order."""
+
+    return tuple(
+        OptimizerPromptRoute(stage, update_mode, bundled_name)
+        for update_mode, mapping in (
+            ("patch", _PATCH_PROMPTS),
+            ("rewrite_from_suggestions", _REWRITE_PROMPTS),
+            ("common", _COMMON_PROMPTS),
+        )
+        for stage, bundled_name in mapping.items()
+    )
+
+
 def load_optimizer_prompt(
     stage: OptimizerStage,
     *,
@@ -57,5 +83,6 @@ def load_optimizer_prompt(
     return (
         files("textskill_optimizer.paper")
         .joinpath("prompts", prompt_name)
-        .read_text(encoding="utf-8")
+        .read_bytes()
+        .decode("utf-8")
     )
