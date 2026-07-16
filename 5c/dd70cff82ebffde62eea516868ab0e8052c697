@@ -1,0 +1,57 @@
+.github/workflows/tests.yml
+  s_96109343e3c898::t_3a5412b7774f57 11-24
+docs/papers/README.md
+  s_96109343e3c898::t_9b87dd2d75baa5 52-65
+docs/papers/prompt-snapshot-v1.json
+  s_96109343e3c898::t_e7e2c0b579e082 1-186
+docs/papers/source-lock.json
+  s_96109343e3c898::t_e95554c8842aac 104-115
+docs/specs/skillopt-current-state.md
+  s_96109343e3c898::t_1333feed1e9a9f 99-107,191-192,197-198,472-475
+docs/specs/skillopt-paper-faithful-roadmap.md
+  s_96109343e3c898::t_b677a9a8a8858e 318-319,609,682-683
+scripts/zero_cost_guard/sitecustomize.py
+  s_96109343e3c898::t_1c9fb2aff3d335 1-8
+tests/conformance/golden/algorithm1-fast-loop-v1.json
+  s_96109343e3c898::t_d5ce57e43ea9be 1-45
+tests/conformance/integration/test_paper_fast_loop.py
+  s_96109343e3c898::t_d4c465d55c538b 203-209,225-244
+tests/conformance/unit/test_paper_zero_cost_policy.py
+  s_96109343e3c898::t_71acdf32696739 1-71
+tests/provenance/test_paper_provenance_linter.py
+  s_96109343e3c898::t_60611916d6e26c 1-100
+textskill_optimizer/paper/__init__.py
+  s_96109343e3c898::t_bb9ecbc9384e0d 19,62-63,70,80-82,85,87
+textskill_optimizer/paper/prompts.py
+  s_1a8c203a78f2c5::t_b28f01e64f6112 5,39-63,86-87
+textskill_optimizer/paper/provenance_lint.py
+  s_96109343e3c898::t_a1b7ac81194c58 1-552
+textskill_optimizer/paper/zero_cost.py
+  s_96109343e3c898::t_967f496e7ec350 1-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5cdd70cff82ebffde62eea516868ab0e8052c697",
+  "prompts": {},
+  "sessions": {
+    "s_1a8c203a78f2c5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f69d8-4345-7420-81f9-f0249783f570",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    },
+    "s_96109343e3c898": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5b5d-04cd-7c30-8b76-2486df7226c7",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
