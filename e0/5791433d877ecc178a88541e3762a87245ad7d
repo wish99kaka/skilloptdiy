@@ -1,0 +1,27 @@
+docs/provenance/README.md
+  s_51962c641b3cb0::t_a1ba6b3b455c57 1-8
+docs/provenance/consumed-splits/coding-hidden-v2-locked-attempt.json
+  s_51962c641b3cb0::t_a53c7f2a7bf4bf 1-14
+docs/provenance/consumed-splits/coding-hidden-v2-locked-receipt.json
+  s_51962c641b3cb0::t_5a749682475270 1-22
+textskill_optimizer/paper/consumed-splits-v1.json
+  s_51962c641b3cb0::t_991715d5d230c3 9,11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e05791433d877ecc178a88541e3762a87245ad7d",
+  "prompts": {},
+  "sessions": {
+    "s_51962c641b3cb0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6a73-0735-7d83-9d00-dc04d561f69a",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
