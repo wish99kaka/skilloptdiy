@@ -1,0 +1,14 @@
+{
+  "archive_sha256": "d96afab4e903943c55773939d0def139be4f839cd008dffdb41b5db6fe967aad",
+  "execution_policy": {
+    "attempts": 1,
+    "task_retries": 1,
+    "whole_command_timeout": null
+  },
+  "schema_version": 1,
+  "selected_seed": "seed-c",
+  "selected_skill_sha256": "93f6b57434c532626addf070f992faeede4ed9cd5982248c8eb632b5b559b290",
+  "source_run_dir": "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop",
+  "started_at": "2026-07-13T08:23:50.645232+00:00",
+  "status": "started"
+}

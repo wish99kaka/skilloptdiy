@@ -1,0 +1,22 @@
+{
+  "archive_sha256": "d96afab4e903943c55773939d0def139be4f839cd008dffdb41b5db6fe967aad",
+  "command": [
+    "/opt/homebrew/Cellar/python@3.10/3.10.20/Frameworks/Python.framework/Versions/3.10/bin/python3.10",
+    "work/run_coding_hidden_v2_locked_eval.py",
+    "--skill",
+    "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/seed-c/executive/best_skill.md",
+    "--out",
+    "/Users/bytedance/CodeA/skilloptdiy/runs/coding-hidden-v2-deepseek-same-run-baseline-matrix-stage5-v1-scorestop/locked_evaluation.json",
+    "--task-timeout",
+    "360",
+    "--task-retries",
+    "1",
+    "--retry-backoff-seconds",
+    "5.0"
+  ],
+  "error": null,
+  "finished_at": "2026-07-13T08:55:34.471469+00:00",
+  "format": "textskill-fernet-tar-gz-v1",
+  "returncode": 0,
+  "started_at": "2026-07-13T08:23:51.341241+00:00"
+}
