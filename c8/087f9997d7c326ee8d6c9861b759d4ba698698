@@ -1,0 +1,59 @@
+docs/specs/skillopt-current-state.md
+  s_51962c641b3cb0::t_643b4fa967b41c 108-123,206-209,214-218,493-497
+pyproject.toml
+  s_51962c641b3cb0::t_9ac071a6ee7e58 42
+scripts/paper_searchqa_selection_controller.py
+  s_51962c641b3cb0::t_a303c8be5f6ada 1-14
+scripts/paper_searchqa_train_controller.py
+  s_51962c641b3cb0::t_7eac2845e05359 1-14
+scripts/run_paper_searchqa.py
+  s_51962c641b3cb0::t_c032ce20aaf376 1-108
+scripts/run_paper_zero_cost_gate.py
+  s_51962c641b3cb0::t_e1671453ddc761 46-50,80,107,124-132
+tests/conformance/integration/test_paper_searchqa_experiment.py
+  s_51962c641b3cb0::t_17dc4e107f5c3c 1-268
+tests/conformance/integration/test_paper_zero_cost_gate.py
+  s_51962c641b3cb0::t_49d4cd292b3729 8,53-68,71
+tests/conformance/unit/test_paper_epoch_plan.py
+  s_51962c641b3cb0::t_e3f9232ef0a235 11-42
+tests/conformance/unit/test_paper_preregistration.py
+  s_51962c641b3cb0::t_66f39d05c93890 1-208
+tests/provenance/test_official_paper_prompts.py
+  s_51962c641b3cb0::t_2844d9c1788b4b 109-117,146-149
+tests/provenance/test_paper_provenance_linter.py
+  s_51962c641b3cb0::t_b658d417903f87 98-115
+textskill_optimizer/paper/epoch_plan.py
+  s_51962c641b3cb0::t_075a7ffef9b2b8 269,280-296,304,313,379-389
+textskill_optimizer/paper/preregistration.py
+  s_1db5b344393daf::t_4a9798b7dafc14 1-616
+textskill_optimizer/paper/searchqa_assets/initial.md
+  s_51962c641b3cb0::t_f1ee7bbc69e43c 1-3
+textskill_optimizer/paper/searchqa_assets/rollout_system.md
+  s_51962c641b3cb0::t_234f16581f584c 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c8087f9997d7c326ee8d6c9861b759d4ba698698",
+  "prompts": {},
+  "sessions": {
+    "s_1db5b344393daf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6af9-9a38-7463-9b80-23bec104449d",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    },
+    "s_51962c641b3cb0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6a73-0735-7d83-9d00-dc04d561f69a",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
