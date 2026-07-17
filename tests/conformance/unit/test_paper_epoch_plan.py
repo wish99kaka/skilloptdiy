@@ -8,6 +8,38 @@ from textskill_optimizer.paper import (
 
 
 class PaperEpochPlanTests(unittest.TestCase):
+    def test_mechanism_smoke_can_bound_epochs_after_slow_meta_become_visible(self) -> None:
+        profile = load_paper_profile()
+        mechanisms = PaperMechanismSpec.for_mechanism_test(
+            profile,
+            analyst_workers=1,
+        )
+
+        plan = PaperEpochPlan.build(
+            profile=profile,
+            train_split_id="searchqa-smoke-train-v1",
+            train_split_manifest_sha256="a" * 64,
+            steps_per_epoch=1,
+            mechanisms=mechanisms,
+            epochs_override=2,
+        )
+
+        self.assertEqual(plan.epochs, 2)
+        self.assertFalse(plan.paper_claim_eligible)
+        plan.require_profile(profile)
+
+    def test_default_scope_cannot_shorten_the_frozen_profile(self) -> None:
+        profile = load_paper_profile()
+
+        with self.assertRaisesRegex(ValueError, "mechanism-test"):
+            PaperEpochPlan.build(
+                profile=profile,
+                train_split_id="searchqa-smoke-train-v1",
+                train_split_manifest_sha256="a" * 64,
+                steps_per_epoch=1,
+                epochs_override=2,
+            )
+
     def test_plan_is_deterministic_and_drives_the_frozen_cosine_budget(self) -> None:
         profile = load_paper_profile()
         kwargs = {

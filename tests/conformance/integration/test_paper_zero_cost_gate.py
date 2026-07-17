@@ -5,6 +5,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -49,19 +50,25 @@ class PaperZeroCostGateTests(unittest.TestCase):
         self.assertIn("M6 zero-cost gate blocks external network", completed.stderr)
 
     def test_audit_only_gate_emits_a_machine_readable_pass_receipt(self) -> None:
-        completed = subprocess.run(
-            (
-                sys.executable,
-                str(ROOT / "scripts/run_paper_zero_cost_gate.py"),
-                "--audit-only",
-            ),
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path = Path(tmp) / "receipt.json"
+            completed = subprocess.run(
+                (
+                    sys.executable,
+                    str(ROOT / "scripts/run_paper_zero_cost_gate.py"),
+                    "--audit-only",
+                    "--receipt-path",
+                    str(receipt_path),
+                ),
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            persisted = json.loads(receipt_path.read_text(encoding="utf-8"))
 
         receipt = json.loads(completed.stdout)
+        self.assertEqual(persisted, receipt)
         self.assertEqual(receipt["schema_version"], "paper-zero-cost-gate-v1")
         self.assertEqual(receipt["status"], "passed")
         self.assertEqual(receipt["external_calls"], 0)

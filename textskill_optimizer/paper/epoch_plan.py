@@ -266,6 +266,7 @@ class PaperEpochPlan:
         train_split_manifest_sha256: str,
         steps_per_epoch: int,
         mechanisms: PaperMechanismSpec | None = None,
+        epochs_override: int | None = None,
     ) -> "PaperEpochPlan":
         validated = _validated_profile(profile)
         mechanism_spec = (
@@ -276,6 +277,23 @@ class PaperEpochPlan:
         if type(mechanism_spec) is not PaperMechanismSpec:
             raise ValueError("paper epoch plan requires exact mechanism spec")
         mechanism_spec.require_profile(validated)
+        if epochs_override is None:
+            execution_epochs = validated.epochs
+        else:
+            if mechanism_spec.paper_claim_eligible:
+                raise ValueError(
+                    "epoch overrides are allowed only for a mechanism-test plan"
+                )
+            if (
+                type(epochs_override) is not int
+                or not validated.slow_update.start_epoch
+                <= epochs_override
+                <= validated.epochs
+            ):
+                raise ValueError(
+                    "mechanism-test epochs must expose slow/meta and not exceed the profile"
+                )
+            execution_epochs = epochs_override
         profile_sha256 = canonical_json_sha256(validated.to_dict())
         batch_ids = _build_batch_ids(
             profile_sha256=profile_sha256,
@@ -283,7 +301,7 @@ class PaperEpochPlan:
             train_split_id=train_split_id,
             train_split_manifest_sha256=train_split_manifest_sha256,
             split_seed=validated.split_seed,
-            epochs=validated.epochs,
+            epochs=execution_epochs,
             steps_per_epoch=steps_per_epoch,
             accumulation=mechanism_spec.accumulation,
         )
@@ -292,7 +310,7 @@ class PaperEpochPlan:
             train_split_id=train_split_id,
             train_split_manifest_sha256=train_split_manifest_sha256,
             split_seed=validated.split_seed,
-            epochs=validated.epochs,
+            epochs=execution_epochs,
             steps_per_epoch=steps_per_epoch,
             rollout_batch_size=validated.rollout_batch_size,
             learning_rate=validated.learning_rate,
@@ -350,7 +368,6 @@ class PaperEpochPlan:
         expected = {
             "profile_sha256": canonical_json_sha256(validated.to_dict()),
             "split_seed": validated.split_seed,
-            "epochs": validated.epochs,
             "rollout_batch_size": validated.rollout_batch_size,
             "learning_rate": validated.learning_rate,
             "learning_rate_floor": validated.learning_rate_floor,
@@ -359,6 +376,17 @@ class PaperEpochPlan:
         if actual != expected:
             raise ValueError("paper epoch plan fields do not match frozen profile")
         self.mechanisms.require_profile(validated)
+        if self.mechanisms.paper_claim_eligible:
+            if self.epochs != validated.epochs:
+                raise ValueError("default paper epoch plan must use all profile epochs")
+        elif not (
+            validated.slow_update.start_epoch
+            <= self.epochs
+            <= validated.epochs
+        ):
+            raise ValueError(
+                "mechanism-test epochs must expose slow/meta and not exceed the profile"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {

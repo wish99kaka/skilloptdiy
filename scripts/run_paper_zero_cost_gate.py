@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Validate locked provenance without invoking pytest.",
     )
+    parser.add_argument(
+        "--receipt-path",
+        type=Path,
+        help="also persist the exact machine-readable receipt at this path",
+    )
     args = parser.parse_args(argv)
 
     source_lock = _read_json(ROOT / "docs/papers/source-lock.json")
@@ -72,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         "test_targets": list(TEST_TARGETS),
     }
     if args.audit_only:
-        print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+        _emit_receipt(receipt, args.receipt_path)
         return 0
 
     completed = subprocess.run(
@@ -99,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         {"code": item.code, "message": item.message}
         for item in decision.violations
     ]
-    print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+    _emit_receipt(receipt, args.receipt_path)
     if decision.authorized:
         return 0
     return completed.returncode or 2
@@ -114,6 +119,15 @@ def _read_json(path: Path) -> dict:
 
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _emit_receipt(receipt: dict, path: Path | None) -> None:
+    encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+    if path is not None:
+        destination = path.resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(encoded + "\n", encoding="utf-8")
+    print(encoded)
 
 
 def _zero_cost_environment() -> dict[str, str]:

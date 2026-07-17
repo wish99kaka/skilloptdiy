@@ -105,6 +105,22 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
   the conformance/provenance suites as one CI gate; only a full pass emits
   a clean-commit-bound `paid_development_authorized=true`, while `--audit-only`
   and dirty worktrees cannot authorize it.
+- M7 smoke-ready infrastructure: SearchQA is pinned to the official SkillOpt
+  v0.2.0 config/scorer/ID-manifest hashes and Hugging Face dataset revision
+  `c1a979068ba118d85467179b704031d113d689cc`. The development materializer
+  uses the dataset server's key filter to retrieve only sampled official
+  train/validation IDs; it neither loads the test ID manifest nor scans
+  nonmatching payload rows, and never emits a test payload.
+  A separate paper entrypoint freezes exact model identities, data/code/runner
+  hashes, semantic retry policy, budgets, and stop conditions before execution.
+  Role-isolated signed controllers keep train trajectories and selection scalar
+  responses behind the M2 firewall. The pinned official 40-train/5-selection
+  development slice is materialized with the test payload still absent. Its
+  four-epoch zero-call run completes the full graph with 300 target and 106
+  optimizer logical calls. A bounded two-epoch mechanism dry-run still covers
+  slow/meta and records 140/54 logical calls plus 166,694/412,247 estimated
+  target/optimizer tokens. This is infrastructure evidence only; no paid M7
+  mechanism smoke has run.
 - External editor path through `examples/coding/openai_compatible_skill_editor.py`.
 - Executive optimizer with bounded atomic edits, learning-rate schedule, rejected buffer, validation gate, slow update, meta skill, checkpoint, and early stop.
 - `coding-hidden-v2` builder/validator with contract tags and contract macro accuracy.
@@ -187,15 +203,19 @@ evidence, not as a paper-faithful or held-out baseline-superiority claim.
 ## Main Gap Versus Paper
 
 The contract-aware same-target loop and its one locked attempt are complete.
-The paper contract, runtime firewall, fast engine, and default epoch lifecycle
-plus all independent M5 mechanisms are now enforced. The M6 zero-cost gate is
-green; the development evidence campaign has not begun.
+The paper contract, runtime firewall, fast engine, default epoch lifecycle, and
+all independent M5 mechanisms are enforced. M6 is green; the M7 SearchQA open
+slice and zero-call graph are verified, but paid empirical development has not
+begun.
 
 Highest-impact remaining gaps:
 
 1. The current executive algorithm is not paper-faithful: selection contract diagnostics and benchmark-specific mechanisms feed optimization, merge/ranking semantics differ, buffer and slow/meta lifecycles differ, and the paper-default run was not exercised.
-2. M7 still requires a cheap SearchQA full-call-graph smoke before any pilot;
-   the M6 receipt authorizes development work but is not empirical evidence.
+2. M7 still requires a clean-commit M6 authorization receipt and the separately
+   frozen two-epoch paid mechanism smoke. Preparation binds the payload-isolated
+   materialization receipt, dry-run receipt, exact Coco binary/config, and
+   mechanically derived caps; review remains required before execution.
+   Neither the M6 receipt nor any zero-call dry-run is empirical evidence.
 3. The consumed `coding-hidden-v2` split cannot support a future paper-faithful held-out claim; a fresh split or official benchmark is required.
 4. The local matrix lacks several paper baselines, ablations, benchmark/model/harness breadth, and target-agent token accounting.
 
@@ -470,9 +490,11 @@ Completed:
 Active next work:
 
 1. Treat M0–M6 as complete through the zero-cost conformance receipt.
-2. Execute the M7 cheap SearchQA full-call-graph smoke next, with a preregistered
-   cap and only open development data.
-3. Do not treat the M6 receipt or any development smoke as held-out evidence.
+2. Commit the M7 path, pass CI, and emit a new clean-commit M6 receipt.
+3. Freeze the paid two-epoch mechanism smoke at the measured 1.5× caps, review
+   the exact preregistration, and only then decide whether to execute it.
+4. Do not treat M6, a zero-call receipt, or any development smoke as held-out
+   evidence.
 
 ## Practical Review Rule
 

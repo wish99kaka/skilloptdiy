@@ -34,6 +34,83 @@ _PINNED_LOCAL_BASELINE = {
     "tag": "contract-aware-extension-v1",
     "commit_sha": "91c00b9c582e48b077c9282f4ccc80db26341653",
 }
+_PINNED_BENCHMARK_REFERENCES = [
+    {
+        "benchmark_id": "searchqa",
+        "locked_on": "2026-07-16",
+        "dataset": {
+            "repository": "lucadiliello/searchqa",
+            "revision": "c1a979068ba118d85467179b704031d113d689cc",
+            "source_id_field": "key",
+            "fields": ["context", "question", "answers", "key"],
+        },
+        "development_materialization_policy": {
+            "official_reference_behavior": (
+                "scripts/materialize_searchqa.py loads all source rows and emits "
+                "train, val, and test payloads"
+            ),
+            "local_development_behavior": (
+                "query only sampled train/validation IDs through the Hugging Face "
+                "dataset-server key filter; do not load the test ID manifest or any "
+                "nonmatching payload row"
+            ),
+            "resolution": (
+                "The M7 development path must preserve the WP5 no-test-access "
+                "boundary even though the official reproduction helper materializes test."
+            ),
+        },
+        "development_sample_sha256": {
+            "train_40_seed_42": (
+                "807e3cee5e40652839df666b1e146420342036bcb36074f790487502480ccf67"
+            ),
+            "selection_5_seed_43": (
+                "542f70f5e890a9da3c18a7622062e33d4e51e070885fca90f16e7210e902f8ac"
+            ),
+        },
+        "official_reference_files": [
+            {
+                "path": "configs/searchqa/default.yaml",
+                "sha256": "4393ea112362140d7ece5f0fbe0a78a47ca7637f06466109c247591aa570ebe0",
+            },
+            {
+                "path": "scripts/materialize_searchqa.py",
+                "sha256": "1fc7980632dcfe3f676eff39b1dc4289cef755797952ddc8bbc2d9670fafb5ea",
+            },
+            {
+                "path": "skillopt/envs/searchqa/evaluator.py",
+                "sha256": "b69136fa727fedeede7ab257144f4dc937877bd1792f13c5c596d566df66fbd3",
+            },
+            {
+                "path": "data/searchqa_id_split/split_manifest.json",
+                "sha256": "b19de95cc4079e065525d25fe65859618887d69c9ffd647dbda61fd6015e2f2a",
+            },
+            {
+                "path": "data/searchqa_id_split/train/items.json",
+                "sha256": "3ae7532c2d11d9ec63ed20e3a4e425db5f6fa51a618622be848d88aa63187f0d",
+            },
+            {
+                "path": "data/searchqa_id_split/val/items.json",
+                "sha256": "2fccbfc16f858a1f2c9b16551c5047b2f4468dff2537f782059ac7355db37e8e",
+            },
+            {
+                "path": "data/searchqa_id_split/test/items.json",
+                "sha256": "b6056005ed8ffa03239a0295644d83968513bed80235927716fca14926ff11bc",
+            },
+        ],
+        "reused_assets": [
+            {
+                "source_path": "skillopt/envs/searchqa/prompts/rollout_system.md",
+                "bundled_path": "textskill_optimizer/paper/searchqa_assets/rollout_system.md",
+                "sha256": "080659db39377c7cb5673063466e16c51446397d09aa3f0382152cea3ca1abbe",
+            },
+            {
+                "source_path": "skillopt/envs/searchqa/skills/initial.md",
+                "bundled_path": "textskill_optimizer/paper/searchqa_assets/initial.md",
+                "sha256": "d3ed21de4a5216da7c3cd63acc2330dc78227524753c9d29573e6692f48d6709",
+            },
+        ],
+    }
+]
 _PINNED_DEVIATIONS = {
     "slow-update-selection-gate": {
         "upstream_evidence": {
@@ -133,6 +210,7 @@ def assess_paper_provenance(
     _check_pins(source_lock, prompt_snapshot, paper_bytes, violations)
     snapshot_items = _indexed_snapshot(prompt_snapshot, violations)
     official_files = _official_files(source_lock, violations)
+    benchmark_assets = _benchmark_assets(source_lock, violations)
     local_files = _local_resolution_files(source_lock, violations)
     route_names = {route.route for route in _ROUTES}
     if set(snapshot_items) != route_names:
@@ -220,7 +298,7 @@ def assess_paper_provenance(
         source_path
         for route in _ROUTES
         if (source_path := _source_path(route)) is not None
-    }
+    } | set(benchmark_assets)
     if set(official_files) != expected_official:
         _add(
             violations,
@@ -228,6 +306,27 @@ def assess_paper_provenance(
             "source_lock.official_reference.reused_files",
             "official reused-file set does not match official prompt routes",
         )
+    for source_path, (bundled_path, expected_sha256) in benchmark_assets.items():
+        if official_files.get(source_path) != expected_sha256:
+            _add(
+                violations,
+                "official_benchmark_asset_mismatch",
+                f"source_lock.official_reference.reused_files.{source_path}",
+                "official benchmark asset is absent or hash-mismatched",
+            )
+        relative = bundled_path.removeprefix("textskill_optimizer/paper/")
+        asset_path = files("textskill_optimizer.paper").joinpath(*relative.split("/"))
+        try:
+            actual_sha256 = hashlib.sha256(asset_path.read_bytes()).hexdigest()
+        except OSError:
+            actual_sha256 = None
+        if actual_sha256 != expected_sha256:
+            _add(
+                violations,
+                "bundled_benchmark_asset_drift",
+                bundled_path,
+                "bundled benchmark asset bytes do not match the source lock",
+            )
     expected_local = {
         _bundled_path(route) for route in _ROUTES if _source_path(route) is None
     }
@@ -256,6 +355,7 @@ def _check_pins(
         "locked_on",
         "paper",
         "official_reference",
+        "benchmark_references",
         "local_baseline",
         "known_upstream_deviations",
         "reuse_policy",
@@ -309,6 +409,13 @@ def _check_pins(
             "baseline_pin_drift",
             "source_lock.local_baseline",
             "contract-aware baseline identity changed",
+        )
+    if source_lock.get("benchmark_references") != _PINNED_BENCHMARK_REFERENCES:
+        _add(
+            violations,
+            "benchmark_reference_drift",
+            "source_lock.benchmark_references",
+            "SearchQA benchmark identity or inspected-file hashes changed",
         )
     if source_lock.get("reuse_policy") != _PINNED_REUSE_POLICY:
         _add(
@@ -432,6 +539,67 @@ def _official_files(
     reference = source_lock.get("official_reference")
     items = reference.get("reused_files") if type(reference) is dict else None
     return _path_hash_map(items, "source_lock.official_reference.reused_files", violations)
+
+
+def _benchmark_assets(
+    source_lock: Mapping[str, Any],
+    violations: list[ProvenanceLintViolation],
+) -> dict[str, tuple[str, str]]:
+    references = source_lock.get("benchmark_references")
+    result: dict[str, tuple[str, str]] = {}
+    if type(references) is not list:
+        _add(
+            violations,
+            "invalid_benchmark_reference",
+            "source_lock.benchmark_references",
+            "benchmark references must be a list",
+        )
+        return result
+    for reference_index, reference in enumerate(references):
+        assets = reference.get("reused_assets") if type(reference) is dict else None
+        if type(assets) is not list:
+            _add(
+                violations,
+                "invalid_benchmark_reference",
+                f"source_lock.benchmark_references[{reference_index}].reused_assets",
+                "benchmark reused assets must be a list",
+            )
+            continue
+        for asset_index, asset in enumerate(assets):
+            path = (
+                "source_lock.benchmark_references"
+                f"[{reference_index}].reused_assets[{asset_index}]"
+            )
+            if type(asset) is not dict or set(asset) != {
+                "source_path",
+                "bundled_path",
+                "sha256",
+            }:
+                _add(
+                    violations,
+                    "invalid_benchmark_reference",
+                    path,
+                    "benchmark reused asset fields are not exact",
+                )
+                continue
+            source_path = asset["source_path"]
+            bundled_path = asset["bundled_path"]
+            sha256 = asset["sha256"]
+            if (
+                type(source_path) is not str
+                or type(bundled_path) is not str
+                or type(sha256) is not str
+                or source_path in result
+            ):
+                _add(
+                    violations,
+                    "invalid_benchmark_reference",
+                    path,
+                    "benchmark asset paths and hash must be unique strings",
+                )
+                continue
+            result[source_path] = (bundled_path, sha256)
+    return result
 
 
 def _local_resolution_files(

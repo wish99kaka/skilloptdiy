@@ -106,6 +106,15 @@ EXPECTED = (
     ),
 )
 
+EXPECTED_BENCHMARK_ASSETS = {
+    "skillopt/envs/searchqa/prompts/rollout_system.md": (
+        "080659db39377c7cb5673063466e16c51446397d09aa3f0382152cea3ca1abbe"
+    ),
+    "skillopt/envs/searchqa/skills/initial.md": (
+        "d3ed21de4a5216da7c3cd63acc2330dc78227524753c9d29573e6692f48d6709"
+    ),
+}
+
 
 class OfficialPaperPromptTests(unittest.TestCase):
     def test_bundled_prompts_match_locked_official_bytes(self) -> None:
@@ -134,7 +143,10 @@ class OfficialPaperPromptTests(unittest.TestCase):
 
         self.assertEqual(
             reused,
-            {path: sha256 for _, _, path, sha256 in EXPECTED},
+            {
+                **{path: sha256 for _, _, path, sha256 in EXPECTED},
+                **EXPECTED_BENCHMARK_ASSETS,
+            },
         )
 
 

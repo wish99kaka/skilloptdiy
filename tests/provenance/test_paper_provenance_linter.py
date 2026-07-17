@@ -95,6 +95,24 @@ class PaperProvenanceLinterTests(unittest.TestCase):
             )
         )
 
+    def test_searchqa_benchmark_reference_drift_fails_closed(self) -> None:
+        source_lock = deepcopy(self.source_lock)
+        source_lock["benchmark_references"][0]["dataset"]["revision"] = "0" * 40
+
+        assessment = assess_paper_provenance(
+            source_lock=source_lock,
+            prompt_snapshot=self.prompt_snapshot,
+            paper_bytes=self.paper_bytes,
+        )
+
+        self.assertFalse(assessment.compliant)
+        self.assertTrue(
+            any(
+                item.code == "benchmark_reference_drift"
+                for item in assessment.violations
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,8 +30,9 @@ No validation improvement, no skill update.
   full-replacement editors fail before evaluation instead of producing a no-op
   executive run.
 - The isolated `paper-faithful-v1` contract is implemented under
-  `textskill_optimizer.paper`; its optimization engine is not yet exposed by
-  the CLI.
+  `textskill_optimizer.paper`. M7 SearchQA development uses the independent
+  `scripts/run_paper_searchqa.py` entrypoint; it is deliberately separate from
+  the legacy/executive CLI.
 
 See `docs/skillopt-executive-protocol.md` only for the historical executive
 JSON contract and `coding-hidden-v2` workflow. Its locked test has already been
@@ -56,9 +57,60 @@ authenticated resume, slow update, and optimizer-only meta guidance. M5 adds
 independently tested accumulation, analyst concurrency, autonomous learning
 rate, rewrite mode, and complete content-addressed artifact lineage. M6 locks
 the complete prompt/source bundle and golden trace behind a zero-external-call,
-clean-commit acceptance gate. The paper engine remains intentionally absent
-from the public CLI until M7 adds and validates the SearchQA development
-execution path.
+clean-commit acceptance gate. M7 now provides a pinned SearchQA train/selection
+materializer, fail-closed preregistration, role-isolated Coco controllers,
+strict external-optimizer adapter, and scripted full-call-graph dry-runs over
+the pinned official 40-train/5-selection development slice. The bounded
+two-epoch mechanism scope covers slow/meta behavior at materially lower cost
+than the four-epoch profile. No paid M7 smoke or test payload has been executed.
+
+Materialize only the open development roles from the pinned official ID
+manifests, then run the zero-call gate:
+
+```bash
+python3 -m pip install --editable ".[dev]"
+python3 scripts/materialize_paper_searchqa.py \
+  --official-manifest-dir /path/to/SkillOpt/data/searchqa_id_split \
+  --output-dir runs/searchqa-development-v1
+python3 scripts/run_paper_searchqa.py zero-call \
+  --mechanism-smoke-scope \
+  --run-dir runs/searchqa-mechanism-dry-run-v1 \
+  --train runs/searchqa-development-v1/train.json \
+  --selection runs/searchqa-development-v1/selection.json \
+  --materialization-receipt \
+    runs/searchqa-development-v1/materialization-receipt.json
+```
+
+The current receipt records 140 logical target calls, 54 logical optimizer
+calls, 166,694 estimated target tokens, and 412,247 estimated optimizer tokens.
+After committing the implementation, persist a fresh clean-commit M6 receipt;
+`prepare-smoke` requires that exact receipt and rechecks the same clean commit:
+
+```bash
+python3 scripts/run_paper_zero_cost_gate.py \
+  --receipt-path runs/paper-zero-cost-m7/receipt.json
+EXTERNAL_LLM_MODEL=<exact-model-id> \
+python3 scripts/run_paper_searchqa.py prepare-smoke \
+  --run-dir runs/searchqa-mechanism-smoke-v1 \
+  --train runs/searchqa-development-v1/train.json \
+  --selection runs/searchqa-development-v1/selection.json \
+  --materialization-receipt \
+    runs/searchqa-development-v1/materialization-receipt.json \
+  --zero-cost-receipt runs/paper-zero-cost-m7/receipt.json \
+  --mechanism-dry-run-receipt \
+    runs/searchqa-mechanism-dry-run-v1/receipt.json \
+  --safety-factor 1.5
+```
+
+Preparation makes no model call. Only the separate `run --preregistration ...`
+command can spend the frozen budget, and it fails closed if the code, receipt,
+models, data, artifacts, or live call/token/time budget drifts. The 210/250,041
+target and 81/618,371 optimizer caps are derived mechanically from the bound
+dry-run receipt; callers cannot substitute arbitrary caps. Concurrent calls
+atomically reserve estimated tokens, actual usage replaces each reservation,
+and the first settled breach permanently blocks every subsequent call (one
+already-authorized concurrent batch may itself cross the threshold because
+providers report actual usage only after responding).
 
 Read `docs/specs/skillopt-paper-faithful-roadmap.md` first. It defines source
 precedence, protocol isolation, the official-code reuse boundary, conformance

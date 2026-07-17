@@ -39,7 +39,7 @@ textskill = "textskill_optimizer.cli:main"
 include = ["textskill_optimizer*"]
 
 [tool.setuptools.package-data]
-"textskill_optimizer.paper" = ["*.json", "profiles/*.json", "prompts/*.md", "schemas/*.json"]
+"textskill_optimizer.paper" = ["*.json", "profiles/*.json", "prompts/*.md", "schemas/*.json", "searchqa_assets/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

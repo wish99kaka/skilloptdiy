@@ -78,9 +78,85 @@
       {
         "path": "skillopt/prompts/rewrite_skill.md",
         "sha256": "2da412ee1d92ab32e59f8a33e2816a2c315edef5e2906d7628d8d093ae0dc68a"
+      },
+      {
+        "path": "skillopt/envs/searchqa/prompts/rollout_system.md",
+        "sha256": "080659db39377c7cb5673063466e16c51446397d09aa3f0382152cea3ca1abbe"
+      },
+      {
+        "path": "skillopt/envs/searchqa/skills/initial.md",
+        "sha256": "d3ed21de4a5216da7c3cd63acc2330dc78227524753c9d29573e6692f48d6709"
       }
     ]
   },
+  "benchmark_references": [
+    {
+      "benchmark_id": "searchqa",
+      "locked_on": "2026-07-16",
+      "dataset": {
+        "repository": "lucadiliello/searchqa",
+        "revision": "c1a979068ba118d85467179b704031d113d689cc",
+        "source_id_field": "key",
+        "fields": [
+          "context",
+          "question",
+          "answers",
+          "key"
+        ]
+      },
+      "development_materialization_policy": {
+        "official_reference_behavior": "scripts/materialize_searchqa.py loads all source rows and emits train, val, and test payloads",
+        "local_development_behavior": "query only sampled train/validation IDs through the Hugging Face dataset-server key filter; do not load the test ID manifest or any nonmatching payload row",
+        "resolution": "The M7 development path must preserve the WP5 no-test-access boundary even though the official reproduction helper materializes test."
+      },
+      "development_sample_sha256": {
+        "train_40_seed_42": "807e3cee5e40652839df666b1e146420342036bcb36074f790487502480ccf67",
+        "selection_5_seed_43": "542f70f5e890a9da3c18a7622062e33d4e51e070885fca90f16e7210e902f8ac"
+      },
+      "official_reference_files": [
+        {
+          "path": "configs/searchqa/default.yaml",
+          "sha256": "4393ea112362140d7ece5f0fbe0a78a47ca7637f06466109c247591aa570ebe0"
+        },
+        {
+          "path": "scripts/materialize_searchqa.py",
+          "sha256": "1fc7980632dcfe3f676eff39b1dc4289cef755797952ddc8bbc2d9670fafb5ea"
+        },
+        {
+          "path": "skillopt/envs/searchqa/evaluator.py",
+          "sha256": "b69136fa727fedeede7ab257144f4dc937877bd1792f13c5c596d566df66fbd3"
+        },
+        {
+          "path": "data/searchqa_id_split/split_manifest.json",
+          "sha256": "b19de95cc4079e065525d25fe65859618887d69c9ffd647dbda61fd6015e2f2a"
+        },
+        {
+          "path": "data/searchqa_id_split/train/items.json",
+          "sha256": "3ae7532c2d11d9ec63ed20e3a4e425db5f6fa51a618622be848d88aa63187f0d"
+        },
+        {
+          "path": "data/searchqa_id_split/val/items.json",
+          "sha256": "2fccbfc16f858a1f2c9b16551c5047b2f4468dff2537f782059ac7355db37e8e"
+        },
+        {
+          "path": "data/searchqa_id_split/test/items.json",
+          "sha256": "b6056005ed8ffa03239a0295644d83968513bed80235927716fca14926ff11bc"
+        }
+      ],
+      "reused_assets": [
+        {
+          "source_path": "skillopt/envs/searchqa/prompts/rollout_system.md",
+          "bundled_path": "textskill_optimizer/paper/searchqa_assets/rollout_system.md",
+          "sha256": "080659db39377c7cb5673063466e16c51446397d09aa3f0382152cea3ca1abbe"
+        },
+        {
+          "source_path": "skillopt/envs/searchqa/skills/initial.md",
+          "bundled_path": "textskill_optimizer/paper/searchqa_assets/initial.md",
+          "sha256": "d3ed21de4a5216da7c3cd63acc2330dc78227524753c9d29573e6692f48d6709"
+        }
+      ]
+    }
+  ],
   "local_baseline": {
     "tag": "contract-aware-extension-v1",
     "commit_sha": "91c00b9c582e48b077c9282f4ccc80db26341653"
