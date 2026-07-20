@@ -28,7 +28,10 @@ from textskill_optimizer.paper.searchqa_experiment import (
     PaidBudgetGuard,
     _require_within_budgets,
 )
-from textskill_optimizer.paper.searchqa_controller_runtime import TargetBudgetGuard
+from textskill_optimizer.paper.searchqa_controller_runtime import (
+    TargetBudgetGuard,
+    _find_response_text,
+)
 
 
 class PaperSearchQAContractTests(unittest.TestCase):
@@ -52,6 +55,47 @@ class PaperSearchQAContractTests(unittest.TestCase):
 
         self.assertEqual(score.exact_match, 1.0)
         self.assertEqual(score.predicted_answer, "Paris")
+
+    def test_extracts_coco_json_message_content_instead_of_session_id(self) -> None:
+        payload = {
+            "session_id": "2df14b86-82ed-441e-9267-341bd8acf236",
+            "agent_states": [],
+            "message": {
+                "role": "assistant",
+                "content": "<answer>Breakfast at Tiffany's</answer>",
+            },
+            "tools": [],
+            "error": "",
+        }
+
+        self.assertEqual(
+            _find_response_text(payload),
+            "<answer>Breakfast at Tiffany's</answer>",
+        )
+
+    def test_rejects_coco_json_without_an_assistant_message(self) -> None:
+        payload = {
+            "session_id": "2df14b86-82ed-441e-9267-341bd8acf236",
+            "agent_states": [],
+            "message": {"role": "user", "content": "not a target response"},
+            "tools": [],
+            "error": "",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "assistant message"):
+            _find_response_text(payload)
+
+    def test_rejects_coco_json_with_empty_assistant_content(self) -> None:
+        payload = {
+            "session_id": "2df14b86-82ed-441e-9267-341bd8acf236",
+            "agent_states": [],
+            "message": {"role": "assistant", "content": ""},
+            "tools": [],
+            "error": "",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "assistant message content"):
+            _find_response_text(payload)
 
     def test_item_schema_is_exact_and_answers_are_non_empty(self) -> None:
         with self.assertRaisesRegex(SearchQAContractViolation, "exactly"):

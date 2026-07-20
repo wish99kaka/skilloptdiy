@@ -318,25 +318,15 @@ def _coco_target(
 
 
 def _find_response_text(payload: Any) -> str:
-    if type(payload) is str and payload.strip():
-        return payload
-    if type(payload) is dict:
-        for key in ("result", "final_message", "output", "content", "text"):
-            value = payload.get(key)
-            if type(value) is str and value.strip():
-                return value
-        for value in payload.values():
-            try:
-                return _find_response_text(value)
-            except RuntimeError:
-                pass
-    if type(payload) is list:
-        for value in reversed(payload):
-            try:
-                return _find_response_text(value)
-            except RuntimeError:
-                pass
-    raise RuntimeError("Coco JSON output did not contain a final response")
+    if type(payload) is not dict:
+        raise RuntimeError("Coco JSON output must be an object")
+    message = payload.get("message")
+    if type(message) is not dict or message.get("role") != "assistant":
+        raise RuntimeError("Coco JSON output did not contain an assistant message")
+    content = message.get("content")
+    if type(content) is not str or not content.strip():
+        raise RuntimeError("Coco JSON output assistant message content must be non-empty")
+    return content
 
 
 def _find_usage(payload: Any) -> dict[str, Any] | None:
