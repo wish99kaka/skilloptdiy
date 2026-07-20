@@ -26,6 +26,7 @@ from textskill_optimizer.paper.backend import OptimizerRequest, OptimizerStage
 from textskill_optimizer.paper.searchqa_experiment import (
     OpenAICompatiblePaperOptimizerBackend,
     PaidBudgetGuard,
+    _require_within_budgets,
 )
 from textskill_optimizer.paper.searchqa_controller_runtime import TargetBudgetGuard
 
@@ -333,7 +334,7 @@ class PaperSearchQAContractTests(unittest.TestCase):
         self.assertEqual(captured["body"]["reasoning_effort"], "medium")
         self.assertEqual(response.usage["total_tokens"], 14)
 
-    def test_target_budget_guard_stops_before_the_next_external_call(self) -> None:
+    def test_model_tokens_are_audit_only_but_call_caps_still_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             guard = TargetBudgetGuard(
@@ -355,21 +356,45 @@ class PaperSearchQAContractTests(unittest.TestCase):
                     usage_ledger=root / "train-2.jsonl",
                     peer_usage_ledger=root / "selection-2.jsonl",
                     target_call_cap=2,
-                    target_token_cap=15,
+                    target_token_cap=1,
                     deadline_monotonic=time.monotonic() + 60,
                 )
             )
             token_guard.reserve(estimated_prompt_tokens=10)
-            with self.assertRaisesRegex(RuntimeError, "target_tokens"):
+            token_guard.settle(1_000, reservation=0)
+            token_guard.reserve(estimated_prompt_tokens=10)
+            token_guard.settle(1_000, reservation=0)
+            with self.assertRaisesRegex(RuntimeError, "target_calls"):
                 token_guard.reserve(estimated_prompt_tokens=10)
 
             optimizer_guard = PaidBudgetGuard(
-                {"optimizer_calls": 2, "optimizer_tokens": 15},
+                {"optimizer_calls": 2, "optimizer_tokens": 1},
                 deadline=time.monotonic() + 60,
             )
-            optimizer_guard.reserve_optimizer_call(estimated_tokens=10)
-            with self.assertRaisesRegex(RuntimeError, "optimizer_tokens"):
+            reservation = optimizer_guard.reserve_optimizer_call(estimated_tokens=10)
+            optimizer_guard.settle_optimizer_tokens(1_000, reservation=reservation)
+            reservation = optimizer_guard.reserve_optimizer_call(estimated_tokens=10)
+            optimizer_guard.settle_optimizer_tokens(1_000, reservation=reservation)
+            with self.assertRaisesRegex(RuntimeError, "optimizer_calls"):
                 optimizer_guard.reserve_optimizer_call(estimated_tokens=10)
+
+            budgets = {
+                "target_calls": 2,
+                "target_tokens": 1,
+                "optimizer_calls": 2,
+                "optimizer_tokens": 1,
+                "wall_time_seconds": 60.0,
+            }
+            usage = {
+                "logical_target_calls": 2,
+                "target_tokens": 2_000,
+                "logical_optimizer_calls": 2,
+                "optimizer_tokens": 2_000,
+            }
+            _require_within_budgets(budgets, usage, 1.0)
+            usage["logical_target_calls"] = 3
+            with self.assertRaisesRegex(RuntimeError, "target_calls"):
+                _require_within_budgets(budgets, usage, 1.0)
 
 
 if __name__ == "__main__":

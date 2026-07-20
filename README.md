@@ -62,7 +62,11 @@ materializer, fail-closed preregistration, role-isolated Coco controllers,
 strict external-optimizer adapter, and scripted full-call-graph dry-runs over
 the pinned official 40-train/5-selection development slice. The bounded
 two-epoch mechanism scope covers slow/meta behavior at materially lower cost
-than the four-epoch profile. No paid M7 smoke or test payload has been executed.
+than the four-epoch profile. The first paid M7 attempt stopped at its
+preregistered initial-selection-saturation condition after five selection
+calls; it made no train or optimizer calls and did not materialize or access a
+test payload. The current runner persists this outcome as a single-use stop
+receipt before returning failure.
 
 Materialize only the open development roles from the pinned official ID
 manifests, then run the zero-call gate:
@@ -104,13 +108,11 @@ python3 scripts/run_paper_searchqa.py prepare-smoke \
 
 Preparation makes no model call. Only the separate `run --preregistration ...`
 command can spend the frozen budget, and it fails closed if the code, receipt,
-models, data, artifacts, or live call/token/time budget drifts. The 210/250,041
-target and 81/618,371 optimizer caps are derived mechanically from the bound
-dry-run receipt; callers cannot substitute arbitrary caps. Concurrent calls
-atomically reserve estimated tokens, actual usage replaces each reservation,
-and the first settled breach permanently blocks every subsequent call (one
-already-authorized concurrent batch may itself cross the threshold because
-providers report actual usage only after responding).
+models, data, artifacts, live call count, or wall-time budget drifts. Target and
+optimizer token projections are still derived mechanically and actual usage is
+still recorded, but both are `audit_only`: they are excluded from experiment
+cost and go/no-go decisions. Call-count and wall-time limits remain hard safety
+boundaries.
 
 Read `docs/specs/skillopt-paper-faithful-roadmap.md` first. It defines source
 precedence, protocol isolation, the official-code reuse boundary, conformance

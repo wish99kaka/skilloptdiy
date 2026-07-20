@@ -79,50 +79,24 @@ _MECHANISM_SMOKE_WALL_TIME_SECONDS = 12_000.0
 
 
 class PaidBudgetGuard:
-    """Thread-safe optimizer budget and shared wall-deadline guard."""
+    """Thread-safe optimizer call budget and shared wall-deadline guard."""
 
     def __init__(self, budgets: Mapping[str, Any], *, deadline: float) -> None:
         self._budgets = budgets
         self._deadline = deadline
         self._optimizer_calls = 0
-        self._optimizer_tokens = 0
-        self._optimizer_reserved_tokens = 0
-        self._stopped = False
         self._lock = threading.Lock()
 
     def reserve_optimizer_call(self, *, estimated_tokens: int) -> int:
         with self._lock:
             self._require_time()
-            if self._stopped:
-                raise RuntimeError("budget_breach stop condition already triggered")
             if self._optimizer_calls + 1 > self._budgets["optimizer_calls"]:
                 raise RuntimeError("budget_breach stop condition triggered: optimizer_calls")
-            if (
-                self._optimizer_tokens
-                + self._optimizer_reserved_tokens
-                + estimated_tokens
-                > self._budgets["optimizer_tokens"]
-            ):
-                self._stopped = True
-                raise RuntimeError(
-                    "budget_breach stop condition triggered: optimizer_tokens"
-                )
             self._optimizer_calls += 1
-            self._optimizer_reserved_tokens += estimated_tokens
-            return estimated_tokens
+            return 0
 
     def settle_optimizer_tokens(self, tokens: int, *, reservation: int) -> None:
         with self._lock:
-            self._optimizer_reserved_tokens -= reservation
-            self._optimizer_tokens += tokens
-            if (
-                self._optimizer_tokens + self._optimizer_reserved_tokens
-                > self._budgets["optimizer_tokens"]
-            ):
-                self._stopped = True
-                raise RuntimeError(
-                    "budget_breach stop condition triggered: optimizer_tokens"
-                )
             self._require_time()
 
     def remaining_seconds(self) -> float:
@@ -467,7 +441,7 @@ def prepare_zero_call_searchqa_experiment(
         "official_selection_id_manifest": materialization.selection_manifest_path,
     }
     preregistration = {
-        "schema_version": "paper-development-preregistration-v1",
+        "schema_version": "paper-development-preregistration-v2",
         "protocol_id": "paper-faithful-v1",
         "stage": "zero_call_dry_run",
         "authorization": None,
@@ -505,6 +479,7 @@ def prepare_zero_call_searchqa_experiment(
             "optimizer_tokens": 1,
             "wall_time_seconds": 3600.0,
             "safety_factor": 1.5,
+            "token_policy": "audit_only",
         },
         "stop_conditions": [
             "budget_breach",
@@ -690,6 +665,40 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
     )
     selection_unsaturated = 0.0 < initial_state.current_score.value < 1.0
     if not selection_unsaturated:
+        wall_time = time.monotonic() - started
+        usage = _usage_summary(
+            Path(authorities["train_usage_path"]),
+            Path(authorities["selection_usage_path"]),
+            optimizer_backend=backend,
+        )
+        event_counts = Counter(event.event_type.value for event in loop.events)
+        receipt_path = run_root / "receipt.json"
+        _write_json(
+            receipt_path,
+            {
+                "schema_version": "paper-searchqa-development-stop-receipt-v1",
+                "status": "stopped",
+                "stage": prereg.stage,
+                "stop_reason": "selection_saturation",
+                "preregistration_sha256": _sha256(prereg.source_path),
+                "profile_sha256": canonical_json_sha256(profile.to_dict()),
+                "plan_sha256": canonical_json_sha256(plan.to_dict()),
+                "completed_epochs": 0,
+                "completed_steps": 0,
+                "initial_selection_score": initial_state.current_score.value,
+                "best_selection_score": initial_state.best_score.value,
+                "selection_unsaturated": False,
+                "full_call_graph_complete": False,
+                "event_counts": dict(sorted(event_counts.items())),
+                "usage": usage,
+                "wall_time_seconds": wall_time,
+                "test_access": dict(payload["test_access"]),
+                "test_payload_status": payload["benchmark"]["test_payload_status"],
+                "claim_class": None,
+                "evidence_level": None,
+            },
+        )
+        prereg.verify()
         raise RuntimeError("selection_saturation stop condition triggered")
     if budget_guard is not None:
         budget_guard.check()
@@ -1004,9 +1013,7 @@ def _require_within_budgets(
 ) -> None:
     checks = {
         "target_calls": usage["logical_target_calls"],
-        "target_tokens": usage["target_tokens"],
         "optimizer_calls": usage["logical_optimizer_calls"],
-        "optimizer_tokens": usage["optimizer_tokens"],
         "wall_time_seconds": wall_time,
     }
     breached = [name for name, value in checks.items() if value > budgets[name]]
@@ -1133,6 +1140,7 @@ def _derive_mechanism_smoke_budgets(
         ),
         "wall_time_seconds": _MECHANISM_SMOKE_WALL_TIME_SECONDS,
         "safety_factor": float(safety_factor),
+        "token_policy": "audit_only",
     }
 
 

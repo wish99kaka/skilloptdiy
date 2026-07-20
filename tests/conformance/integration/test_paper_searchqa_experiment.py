@@ -137,6 +137,52 @@ class PaperSearchQAExperimentTests(unittest.TestCase):
         ):
             self.assertGreater(receipt["event_counts"].get(required, 0), 0, required)
 
+    def test_selection_saturation_writes_a_single_use_stop_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            train_path = root / "open-train.json"
+            selection_path = root / "open-selection.json"
+            train_path.write_text(json.dumps(_items("train", 40)), encoding="utf-8")
+            saturated = _items("selection", 5)
+            for index, item in enumerate(saturated):
+                item["id"] = f"selection-{index * 2:03d}"
+            selection_path.write_text(json.dumps(saturated), encoding="utf-8")
+            materialization_receipt, materialization = _fake_materialization(root)
+            with patch(
+                "textskill_optimizer.paper.searchqa_experiment."
+                "verify_searchqa_materialization_receipt",
+                return_value=materialization,
+            ):
+                preregistration_path = prepare_zero_call_searchqa_experiment(
+                    run_dir=root / "run",
+                    train_path=train_path,
+                    selection_path=selection_path,
+                    materialization_receipt_path=materialization_receipt,
+                )
+
+            with self.assertRaisesRegex(RuntimeError, "selection_saturation"):
+                run_searchqa_experiment(preregistration_path)
+            receipt_path = root / "run" / "receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            with self.assertRaisesRegex(ValueError, "single-use"):
+                run_searchqa_experiment(preregistration_path)
+
+        self.assertEqual(
+            receipt["schema_version"],
+            "paper-searchqa-development-stop-receipt-v1",
+        )
+        self.assertEqual(receipt["status"], "stopped")
+        self.assertEqual(receipt["stop_reason"], "selection_saturation")
+        self.assertEqual(receipt["initial_selection_score"], 1.0)
+        self.assertFalse(receipt["selection_unsaturated"])
+        self.assertEqual(receipt["completed_epochs"], 0)
+        self.assertEqual(receipt["completed_steps"], 0)
+        self.assertEqual(receipt["usage"]["logical_target_calls"], 5)
+        self.assertEqual(receipt["usage"]["logical_optimizer_calls"], 0)
+        self.assertEqual(receipt["test_access"], {"allowed": False, "attempt": 0})
+        self.assertEqual(receipt["test_payload_status"], "not_materialized")
+        self.assertIsNone(receipt["claim_class"])
+
     def test_prepare_rejects_a_saturated_or_too_small_smoke_slice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -258,6 +304,7 @@ class PaperSearchQAExperimentTests(unittest.TestCase):
             payload["budgets"]["optimizer_tokens"],
             math.ceil(dry_usage["estimated_optimizer_tokens"] * 1.5),
         )
+        self.assertEqual(payload["budgets"]["token_policy"], "audit_only")
         self.assertIn(
             "zero_cost_receipt",
             {artifact["artifact_id"] for artifact in payload["artifacts"]},

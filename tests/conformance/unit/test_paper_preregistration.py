@@ -52,7 +52,7 @@ class PaperPreregistrationTests(unittest.TestCase):
             )
         )
         return {
-            "schema_version": "paper-development-preregistration-v1",
+            "schema_version": "paper-development-preregistration-v2",
             "protocol_id": "paper-faithful-v1",
             "stage": "zero_call_dry_run",
             "authorization": None,
@@ -88,6 +88,7 @@ class PaperPreregistrationTests(unittest.TestCase):
                 "optimizer_tokens": 1,
                 "wall_time_seconds": 3600.0,
                 "safety_factor": 1.5,
+                "token_policy": "audit_only",
             },
             "stop_conditions": [
                 "budget_breach",
@@ -146,6 +147,17 @@ class PaperPreregistrationTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaisesRegex(PaperPreregistrationViolation, "budget"):
+                load_paper_preregistration(path)
+
+    def test_requires_model_tokens_to_be_audit_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = self._valid_payload(root)
+            payload["budgets"]["token_policy"] = "hard_limit"
+            path = root / "preregistration.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(PaperPreregistrationViolation, "audit_only"):
                 load_paper_preregistration(path)
 
     def test_paid_stage_requires_a_hash_bound_receipt_for_the_same_clean_commit(self) -> None:

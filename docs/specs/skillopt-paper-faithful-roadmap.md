@@ -368,9 +368,12 @@ Spend in this order:
 6. One atomic held-out matrix.
 7. Benchmark/model/harness breadth.
 
-Set each paid stage's call/token/wall-time cap from dry-run or pilot estimates
-with a 1.25–1.5 safety factor. A budget breach invalidates or stops the stage;
-do not silently shrink the protocol after execution starts.
+Set each paid stage's call-count and wall-time cap from dry-run or pilot
+estimates with a 1.25–1.5 safety factor. Those two limits are fail-closed.
+Target-agent and experiment-optimizer token projections and actual usage remain
+mandatory audit fields, but are excluded from experiment cost and go/no-go
+decisions. The resource optimization target is the Codex development task's
+own token usage, which is not an experiment receipt metric.
 
 ### 11.2 Baselines
 
@@ -633,7 +636,8 @@ Dependencies: WP4.
    single-factor ablations.
 
 Exit gate: the preregistered development gate passes, selection is not
-saturated, call/token/time scope is complete, and no test data was accessed.
+saturated, call/time limits and audit-only model-token scope are complete, and
+no test data was accessed.
 
 #### WP6 — Atomic held-out evidence and breadth
 

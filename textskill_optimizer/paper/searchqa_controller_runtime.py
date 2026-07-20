@@ -43,38 +43,20 @@ class TargetBudgetGuard:
             args.peer_usage_ledger
         )
         self._calls = len(records)
-        self._tokens = sum(int(record.get("total_tokens", 0)) for record in records)
-        self._reserved_tokens = 0
-        self._stopped = False
         self._call_cap = args.target_call_cap
-        self._token_cap = args.target_token_cap
         self._deadline = args.deadline_monotonic
         self._lock = threading.Lock()
 
     def reserve(self, *, estimated_prompt_tokens: int) -> int:
         with self._lock:
             self._require_time()
-            if self._stopped:
-                raise RuntimeError("budget_breach stop condition already triggered")
             if self._calls + 1 > self._call_cap:
                 raise RuntimeError("budget_breach stop condition triggered: target_calls")
-            if (
-                self._tokens + self._reserved_tokens + estimated_prompt_tokens
-                > self._token_cap
-            ):
-                self._stopped = True
-                raise RuntimeError("budget_breach stop condition triggered: target_tokens")
             self._calls += 1
-            self._reserved_tokens += estimated_prompt_tokens
-            return estimated_prompt_tokens
+            return 0
 
     def settle(self, total_tokens: int, *, reservation: int) -> None:
         with self._lock:
-            self._reserved_tokens -= reservation
-            self._tokens += total_tokens
-            if self._tokens + self._reserved_tokens > self._token_cap:
-                self._stopped = True
-                raise RuntimeError("budget_breach stop condition triggered: target_tokens")
             self._require_time()
 
     def remaining_seconds(self) -> float:

@@ -1,6 +1,6 @@
 # SkillOpt Current State
 
-Date: 2026-07-16
+Date: 2026-07-20
 
 ## Objective
 
@@ -14,7 +14,7 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
 - Locked test: the reviewed Stage 7 attempt completed once on 2026-07-13. Never rerun this split or reuse it for a paper-faithful held-out claim.
 - Active roadmap: `docs/specs/skillopt-paper-faithful-roadmap.md`.
 - Source precedence: paper first, official implementation second, local extensions third.
-- Current token accounting scope: project executor usage and optimizer API usage. Coco/CCR/Kilo token usage is explicitly out of scope for now.
+- Current resource priority: tokens consumed by the Codex development task itself. Target-agent and experiment-optimizer token usage is recorded for audit only and is excluded from cost and go/no-go decisions.
 - Targeted smoke runs are mechanism checks only. They validate proposal/rejection/control-loop behavior on selected tasks; they do not prove full `coding-hidden-v2` benchmark effectiveness.
 - Cached baselines may be used for low-cost smoke score comparison only. They must not be used for final cost comparisons because their duration and usage are artifact-derived, not same-run measurements.
 
@@ -119,8 +119,14 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
   four-epoch zero-call run completes the full graph with 300 target and 106
   optimizer logical calls. A bounded two-epoch mechanism dry-run still covers
   slow/meta and records 140/54 logical calls plus 166,694/412,247 estimated
-  target/optimizer tokens. This is infrastructure evidence only; no paid M7
-  mechanism smoke has run.
+  target/optimizer tokens. The first paid attempt
+  `paper-searchqa-mechanism-smoke-c8087f9-v2` stopped at the preregistered
+  initial selection-saturation condition after five selection calls. It made
+  no train or optimizer call and did not access test data. That attempt exposed
+  a missing stop receipt; the runner now persists the initial scalar score,
+  usage, stop reason, and test-access state before returning failure. Model
+  token totals remain auditable but do not stop a run; call and wall-time limits
+  remain hard.
 - External editor path through `examples/coding/openai_compatible_skill_editor.py`.
 - Executive optimizer with bounded atomic edits, learning-rate schedule, rejected buffer, validation gate, slow update, meta skill, checkpoint, and early stop.
 - `coding-hidden-v2` builder/validator with contract tags and contract macro accuracy.
@@ -205,17 +211,19 @@ evidence, not as a paper-faithful or held-out baseline-superiority claim.
 The contract-aware same-target loop and its one locked attempt are complete.
 The paper contract, runtime firewall, fast engine, default epoch lifecycle, and
 all independent M5 mechanisms are enforced. M6 is green; the M7 SearchQA open
-slice and zero-call graph are verified, but paid empirical development has not
-begun.
+slice and zero-call graph are verified. Paid empirical development began, but
+the first attempt stopped before optimization because its initial selection
+score was saturated.
 
 Highest-impact remaining gaps:
 
 1. The current executive algorithm is not paper-faithful: selection contract diagnostics and benchmark-specific mechanisms feed optimization, merge/ranking semantics differ, buffer and slow/meta lifecycles differ, and the paper-default run was not exercised.
-2. M7 still requires a clean-commit M6 authorization receipt and the separately
-   frozen two-epoch paid mechanism smoke. Preparation binds the payload-isolated
-   materialization receipt, dry-run receipt, exact Coco binary/config, and
-   mechanically derived caps; review remains required before execution.
-   Neither the M6 receipt nor any zero-call dry-run is empirical evidence.
+2. M7 requires a new clean-commit M6 authorization receipt and a new
+   preregistration after the stop-receipt/token-policy change. Before another
+   paid attempt, use the persisted initial scalar to choose a protocol-safe,
+   deterministic response to selection saturation; do not cherry-pick items by
+   per-item model outcomes. Neither the M6 receipt nor any zero-call dry-run is
+   empirical evidence.
 3. The consumed `coding-hidden-v2` split cannot support a future paper-faithful held-out claim; a fresh split or official benchmark is required.
 4. The local matrix lacks several paper baselines, ablations, benchmark/model/harness breadth, and target-agent token accounting.
 
@@ -490,9 +498,10 @@ Completed:
 Active next work:
 
 1. Treat M0–M6 as complete through the zero-cost conformance receipt.
-2. Commit the M7 path, pass CI, and emit a new clean-commit M6 receipt.
-3. Freeze the paid two-epoch mechanism smoke at the measured 1.5× caps, review
-   the exact preregistration, and only then decide whether to execute it.
+2. Commit the stop-receipt and audit-only token-policy change, pass CI, and emit
+   a new clean-commit M6 receipt.
+3. Diagnose the recorded saturation direction, freeze a protocol-safe v3 paid
+   smoke with hard call/time limits, review it, and only then execute it.
 4. Do not treat M6, a zero-call receipt, or any development smoke as held-out
    evidence.
 

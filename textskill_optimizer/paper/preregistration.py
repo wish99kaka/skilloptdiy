@@ -195,7 +195,7 @@ def _validate_payload(payload: object) -> None:
         },
         context="preregistration",
     )
-    if payload["schema_version"] != "paper-development-preregistration-v1":
+    if payload["schema_version"] != "paper-development-preregistration-v2":
         raise PaperPreregistrationViolation("unsupported preregistration schema")
     if payload["protocol_id"] != "paper-faithful-v1":
         raise PaperPreregistrationViolation("preregistration protocol drift")
@@ -471,6 +471,7 @@ def _validate_dry_run_receipt(
         ),
         "wall_time_seconds": 12_000.0,
         "safety_factor": factor,
+        "token_policy": "audit_only",
     }
     if dict(budgets) != expected_budgets:
         raise PaperPreregistrationViolation(
@@ -556,6 +557,7 @@ def _validate_budgets(payload: object) -> None:
             "optimizer_tokens",
             "wall_time_seconds",
             "safety_factor",
+            "token_policy",
         },
         context="budgets",
     )
@@ -587,6 +589,10 @@ def _validate_budgets(payload: object) -> None:
     ):
         raise PaperPreregistrationViolation(
             "preregistration safety factor must be between 1.25 and 1.5"
+        )
+    if payload["token_policy"] != "audit_only":
+        raise PaperPreregistrationViolation(
+            "preregistration model-token policy must be audit_only"
         )
 
 
