@@ -1,0 +1,21 @@
+scripts/materialize_paper_searchqa.py
+  s_51962c641b3cb0::t_f599a6b22db3ae 21,33,37-41,79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "61985681fe0e340652bb975be13f12ae82b3769b",
+  "prompts": {},
+  "sessions": {
+    "s_51962c641b3cb0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6a73-0735-7d83-9d00-dc04d561f69a",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
