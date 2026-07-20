@@ -18,6 +18,7 @@ from textskill_optimizer.paper.searchqa import (
     SEARCHQA_DATASET_REPO,
     SEARCHQA_DATASET_REVISION,
     fetch_searchqa_rows_by_id,
+    get_searchqa_development_materialization_policy,
     sample_searchqa_development_ids,
     select_searchqa_development_rows,
     verify_searchqa_materialization_receipt,
@@ -29,10 +30,15 @@ def main() -> int:
     parser.add_argument("--official-manifest-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--train-size", type=int, default=40)
-    parser.add_argument("--selection-size", type=int, default=5)
+    parser.add_argument("--selection-size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     try:
+        policy = get_searchqa_development_materialization_policy(
+            train_limit=args.train_size,
+            selection_limit=args.selection_size,
+            seed=args.seed,
+        )
         train_manifest = args.official_manifest_dir / "train" / "items.json"
         selection_manifest = args.official_manifest_dir / "val" / "items.json"
         _require_hash(train_manifest, OFFICIAL_SEARCHQA_ID_MANIFEST_SHA256["train"])
@@ -70,7 +76,7 @@ def main() -> int:
         _write_items(train_path, selected["train"])
         _write_items(selection_path, selected["selection"])
         receipt = {
-            "schema_version": "searchqa-development-materialization-v2",
+            "schema_version": policy.schema_version,
             "source_repo": SEARCHQA_DATASET_REPO,
             "source_revision": SEARCHQA_DATASET_REVISION,
             "source_access": {

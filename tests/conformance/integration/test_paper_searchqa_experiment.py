@@ -90,7 +90,7 @@ class PaperSearchQAExperimentTests(unittest.TestCase):
             selection_path = root / "open-selection.json"
             train_path.write_text(json.dumps(_items("train", 40)), encoding="utf-8")
             selection_path.write_text(
-                json.dumps(_items("selection", 5)), encoding="utf-8"
+                json.dumps(_items("selection", 20)), encoding="utf-8"
             )
             materialization_receipt, materialization = _fake_materialization(root)
             with patch(

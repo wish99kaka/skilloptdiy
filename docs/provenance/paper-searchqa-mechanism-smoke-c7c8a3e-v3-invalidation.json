@@ -1,0 +1,50 @@
+{
+  "schema_version": "paper-searchqa-evidence-invalidation-v1",
+  "status": "invalidated",
+  "run_id": "paper-searchqa-mechanism-smoke-c7c8a3e-v3",
+  "invalidated_artifacts": {
+    "preregistration_sha256": "39137689ec6c40cdfca6acc669d7d618de7991a1a54bc2fad9aa24629d9a1c6f",
+    "receipt_sha256": "16f880b9913dd9bda1a457c97a7aac8c32a2758b2db10be4d843e7e57501f45c"
+  },
+  "cause": {
+    "code_commit": "c7c8a3e685acc351a26a0d8365d20ba04a23c0f1",
+    "controller_runtime_sha256": "1abafb3539792de1296d00172edd8a6c339f94cb3beba86ef33ea27171260b49",
+    "defect": "The Coco JSON response parser recursively returned the first non-empty string, which was session_id, instead of message.content.",
+    "affected_fields": [
+      "initial_selection_score",
+      "best_selection_score",
+      "selection_unsaturated",
+      "status",
+      "stop_reason"
+    ]
+  },
+  "diagnostic_replay": {
+    "same_selection_item_count": 5,
+    "cached_session_batches": [
+      {
+        "exact_matches": 4,
+        "score": 0.8
+      },
+      {
+        "exact_matches": 5,
+        "score": 1.0
+      }
+    ],
+    "conclusion": "The recorded 0.0 score and selection_saturation stop are invalid. The five-item slice also has insufficient resolution and can stochastically saturate."
+  },
+  "preserved_facts": {
+    "external_target_calls": 5,
+    "external_optimizer_calls": 0,
+    "train_calls": 0,
+    "test_access_attempt": 0,
+    "test_payload_status": "not_materialized"
+  },
+  "remediation": {
+    "parser_fix_commit": "59ac3e08e7698e94129228fad3944130524489d3",
+    "parser_fix_runtime_sha256": "2b07b9a51333dc299d79c8690bbfc24555bb0a562ae3ee20444d3de15adb0741",
+    "replacement_materialization_schema": "searchqa-development-materialization-v3",
+    "replacement_selection_count": 20,
+    "replacement_selection_sha256": "1282918538c2d23cc77ffe6764bcfad965c0ca34a8e9a5b18fa45ac905ebc927"
+  },
+  "evidence_policy": "Keep the original single-use receipt immutable. Do not use it for model quality, selection saturation, development, or claim evidence."
+}

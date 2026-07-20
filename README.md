@@ -60,13 +60,19 @@ the complete prompt/source bundle and golden trace behind a zero-external-call,
 clean-commit acceptance gate. M7 now provides a pinned SearchQA train/selection
 materializer, fail-closed preregistration, role-isolated Coco controllers,
 strict external-optimizer adapter, and scripted full-call-graph dry-runs over
-the pinned official 40-train/5-selection development slice. The bounded
-two-epoch mechanism scope covers slow/meta behavior at materially lower cost
-than the four-epoch profile. The first paid M7 attempt stopped at its
-preregistered initial-selection-saturation condition after five selection
-calls; it made no train or optimizer calls and did not materialize or access a
-test payload. The current runner persists this outcome as a single-use stop
-receipt before returning failure.
+pinned official development slices. Historical materialization v2 preserves
+the original 40-train/5-selection slice. Current materialization v3 uses the
+same deterministic seed and 40 train items but expands selection to 20 items,
+reducing score granularity from 20% to 5% without selecting items by model
+outcomes. The bounded two-epoch mechanism scope covers slow/meta behavior at
+materially lower cost than the four-epoch profile.
+
+The paid run `paper-searchqa-mechanism-smoke-c7c8a3e-v3` is invalid as model,
+selection-saturation, or development evidence. Its Coco parser scored session
+IDs instead of `message.content`, so the persisted scalar and stop reason are
+wrong. The immutable receipt remains useful only for its preserved operational
+facts: five target calls, zero train/optimizer calls, and no test access. See
+`docs/provenance/paper-searchqa-mechanism-smoke-c7c8a3e-v3-invalidation.json`.
 
 Materialize only the open development roles from the pinned official ID
 manifests, then run the zero-call gate:
@@ -85,10 +91,9 @@ python3 scripts/run_paper_searchqa.py zero-call \
     runs/searchqa-development-v1/materialization-receipt.json
 ```
 
-The current receipt records 140 logical target calls, 54 logical optimizer
-calls, 166,694 estimated target tokens, and 412,247 estimated optimizer tokens.
-After committing the implementation, persist a fresh clean-commit M6 receipt;
-`prepare-smoke` requires that exact receipt and rechecks the same clean commit:
+After committing the implementation, persist a fresh clean-commit M6 receipt
+and a new 40/20 mechanism dry-run receipt. `prepare-smoke` requires those exact
+receipts and rechecks the same clean commit:
 
 ```bash
 python3 scripts/run_paper_zero_cost_gate.py \

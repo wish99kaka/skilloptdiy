@@ -37,7 +37,7 @@ _PINNED_LOCAL_BASELINE = {
 _PINNED_BENCHMARK_REFERENCES = [
     {
         "benchmark_id": "searchqa",
-        "locked_on": "2026-07-16",
+        "locked_on": "2026-07-20",
         "dataset": {
             "repository": "lucadiliello/searchqa",
             "revision": "c1a979068ba118d85467179b704031d113d689cc",
@@ -65,6 +65,9 @@ _PINNED_BENCHMARK_REFERENCES = [
             ),
             "selection_5_seed_43": (
                 "542f70f5e890a9da3c18a7622062e33d4e51e070885fca90f16e7210e902f8ac"
+            ),
+            "selection_20_seed_43": (
+                "1282918538c2d23cc77ffe6764bcfad965c0ca34a8e9a5b18fa45ac905ebc927"
             ),
         },
         "official_reference_files": [

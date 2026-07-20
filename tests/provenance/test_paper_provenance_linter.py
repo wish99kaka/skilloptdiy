@@ -113,6 +113,29 @@ class PaperProvenanceLinterTests(unittest.TestCase):
             )
         )
 
+    def test_invalidated_searchqa_smoke_cannot_be_mistaken_for_evidence(self) -> None:
+        invalidation = json.loads(
+            (
+                ROOT
+                / "docs/provenance/"
+                "paper-searchqa-mechanism-smoke-c7c8a3e-v3-invalidation.json"
+            ).read_text(encoding="utf-8")
+        )
+        sample_hashes = self.source_lock["benchmark_references"][0][
+            "development_sample_sha256"
+        ]
+
+        self.assertEqual(invalidation["status"], "invalidated")
+        self.assertIn(
+            "initial_selection_score",
+            invalidation["cause"]["affected_fields"],
+        )
+        self.assertEqual(invalidation["preserved_facts"]["test_access_attempt"], 0)
+        self.assertEqual(
+            invalidation["remediation"]["replacement_selection_sha256"],
+            sample_hashes["selection_20_seed_43"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

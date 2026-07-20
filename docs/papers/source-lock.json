@@ -92,7 +92,7 @@
   "benchmark_references": [
     {
       "benchmark_id": "searchqa",
-      "locked_on": "2026-07-16",
+      "locked_on": "2026-07-20",
       "dataset": {
         "repository": "lucadiliello/searchqa",
         "revision": "c1a979068ba118d85467179b704031d113d689cc",
@@ -111,7 +111,8 @@
       },
       "development_sample_sha256": {
         "train_40_seed_42": "807e3cee5e40652839df666b1e146420342036bcb36074f790487502480ccf67",
-        "selection_5_seed_43": "542f70f5e890a9da3c18a7622062e33d4e51e070885fca90f16e7210e902f8ac"
+        "selection_5_seed_43": "542f70f5e890a9da3c18a7622062e33d4e51e070885fca90f16e7210e902f8ac",
+        "selection_20_seed_43": "1282918538c2d23cc77ffe6764bcfad965c0ca34a8e9a5b18fa45ac905ebc927"
       },
       "official_reference_files": [
         {

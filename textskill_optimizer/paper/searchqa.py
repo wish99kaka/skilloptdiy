@@ -33,6 +33,15 @@ OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256 = {
     "train": "807e3cee5e40652839df666b1e146420342036bcb36074f790487502480ccf67",
     "selection": "542f70f5e890a9da3c18a7622062e33d4e51e070885fca90f16e7210e902f8ac",
 }
+OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256_BY_SCHEMA = {
+    "searchqa-development-materialization-v2": (
+        OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256
+    ),
+    "searchqa-development-materialization-v3": {
+        "train": "807e3cee5e40652839df666b1e146420342036bcb36074f790487502480ccf67",
+        "selection": "1282918538c2d23cc77ffe6764bcfad965c0ca34a8e9a5b18fa45ac905ebc927",
+    },
+}
 
 
 class SearchQAContractViolation(ValueError):
@@ -44,6 +53,34 @@ class SearchQAMaterialization:
     receipt_path: Path
     train_manifest_path: Path
     selection_manifest_path: Path
+
+
+@dataclass(frozen=True)
+class SearchQADevelopmentMaterializationPolicy:
+    schema_version: str
+    seed: int
+    train_limit: int
+    selection_limit: int
+
+    @property
+    def requested_id_count(self) -> int:
+        return self.train_limit + self.selection_limit
+
+
+_SEARCHQA_DEVELOPMENT_MATERIALIZATION_POLICIES = (
+    SearchQADevelopmentMaterializationPolicy(
+        schema_version="searchqa-development-materialization-v2",
+        seed=42,
+        train_limit=40,
+        selection_limit=5,
+    ),
+    SearchQADevelopmentMaterializationPolicy(
+        schema_version="searchqa-development-materialization-v3",
+        seed=42,
+        train_limit=40,
+        selection_limit=20,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -122,6 +159,33 @@ def load_searchqa_items(path: str | Path) -> tuple[SearchQAItem, ...]:
     if len(item_ids) != len(set(item_ids)):
         raise SearchQAContractViolation("SearchQA split contains duplicate item ids")
     return items
+
+
+def get_searchqa_development_materialization_policy(
+    *,
+    train_limit: int,
+    selection_limit: int,
+    seed: int,
+) -> SearchQADevelopmentMaterializationPolicy:
+    for policy in _SEARCHQA_DEVELOPMENT_MATERIALIZATION_POLICIES:
+        if (
+            policy.train_limit == train_limit
+            and policy.selection_limit == selection_limit
+            and policy.seed == seed
+        ):
+            return policy
+    raise SearchQAContractViolation(
+        "unsupported SearchQA development materialization sample"
+    )
+
+
+def _searchqa_development_materialization_policy_for_schema(
+    schema_version: object,
+) -> SearchQADevelopmentMaterializationPolicy:
+    for policy in _SEARCHQA_DEVELOPMENT_MATERIALIZATION_POLICIES:
+        if policy.schema_version == schema_version:
+            return policy
+    raise SearchQAContractViolation("SearchQA materialization identity drift")
 
 
 def normalize_searchqa_answer(value: str) -> str:
@@ -368,9 +432,11 @@ def verify_searchqa_materialization_receipt(
         },
         context="SearchQA materialization receipt",
     )
+    policy = _searchqa_development_materialization_policy_for_schema(
+        receipt["schema_version"]
+    )
     if (
-        receipt["schema_version"] != "searchqa-development-materialization-v2"
-        or receipt["source_repo"] != SEARCHQA_DATASET_REPO
+        receipt["source_repo"] != SEARCHQA_DATASET_REPO
         or receipt["source_revision"] != SEARCHQA_DATASET_REVISION
         or receipt["test_payload_status"] != "not_materialized"
     ):
@@ -393,8 +459,8 @@ def verify_searchqa_materialization_receipt(
         or access["endpoint"] != SEARCHQA_DATASET_SERVER_ENDPOINT
         or access["source_main_revision"] != SEARCHQA_DATASET_REVISION
         or access["queried_splits"] != list(SEARCHQA_SOURCE_SPLITS)
-        or access["requested_id_count"] != 45
-        or access["received_id_count"] != 45
+        or access["requested_id_count"] != policy.requested_id_count
+        or access["received_id_count"] != policy.requested_id_count
     ):
         raise SearchQAContractViolation("SearchQA source access was not payload-isolated")
     if receipt["official_manifest_sha256"] != {
@@ -404,32 +470,45 @@ def verify_searchqa_materialization_receipt(
     }:
         raise SearchQAContractViolation("official SearchQA manifest identity drift")
     if receipt["sample"] != {
-        "seed": 42,
-        "train_limit": 40,
-        "selection_limit": 5,
-    } or receipt["counts"] != {"train": 40, "selection": 5}:
+        "seed": policy.seed,
+        "train_limit": policy.train_limit,
+        "selection_limit": policy.selection_limit,
+    } or receipt["counts"] != {
+        "train": policy.train_limit,
+        "selection": policy.selection_limit,
+    }:
         raise SearchQAContractViolation("SearchQA development sample drift")
     manifest_paths = _verify_manifest_files(source.parent, receipt["manifest_files"])
     actual_train = Path(train_path).resolve()
     actual_selection = Path(selection_path).resolve()
     _verify_materialized_output(
-        source.parent, receipt["outputs"], "train", actual_train, expected_count=40
+        source.parent,
+        receipt["outputs"],
+        "train",
+        actual_train,
+        expected_count=policy.train_limit,
+        expected_sha256=OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256_BY_SCHEMA[
+            policy.schema_version
+        ]["train"],
     )
     _verify_materialized_output(
         source.parent,
         receipt["outputs"],
         "selection",
         actual_selection,
-        expected_count=5,
+        expected_count=policy.selection_limit,
+        expected_sha256=OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256_BY_SCHEMA[
+            policy.schema_version
+        ]["selection"],
     )
     train_ids = _load_manifest_ids(manifest_paths["train"])
     selection_ids = _load_manifest_ids(manifest_paths["selection"])
     sampled = sample_searchqa_development_ids(
         train_ids=train_ids,
         selection_ids=selection_ids,
-        train_limit=40,
-        selection_limit=5,
-        seed=42,
+        train_limit=policy.train_limit,
+        selection_limit=policy.selection_limit,
+        seed=policy.seed,
     )
     if tuple(item.item_id for item in load_searchqa_items(actual_train)) != sampled[
         "train"
@@ -529,6 +608,7 @@ def _verify_materialized_output(
     actual_path: Path,
     *,
     expected_count: int,
+    expected_sha256: str,
 ) -> None:
     _require_exact_keys(payload, {"train", "selection"}, context="outputs")
     item = payload[role]
@@ -536,7 +616,7 @@ def _verify_materialized_output(
     receipt_path = _resolve_receipt_path(root, item["path"])
     if (
         receipt_path != actual_path
-        or item["sha256"] != OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256[role]
+        or item["sha256"] != expected_sha256
         or item["sha256"] != _sha256(actual_path)
     ):
         raise SearchQAContractViolation(f"SearchQA {role} output hash drift")

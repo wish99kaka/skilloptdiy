@@ -620,9 +620,16 @@ blocked.
 
 #### WP5 — Development evidence
 
+Status: in progress. The first persisted paid smoke receipt was invalidated by
+a Coco response-parser defect. Historical materialization v2 remains verifiable;
+replacement materialization v3 deterministically expands the smoke selection
+slice from 5 to 20 official items without using model outcomes.
+
 Dependencies: WP4.
 
-1. Run one cheap full-call-graph smoke on open development data.
+1. Run one cheap full-call-graph smoke on open development data. The reduced
+   SearchQA smoke uses 40 train and 20 selection items under materialization v3;
+   the earlier 5-item v2 slice is retained only for historical verification.
 2. Preregister one full-profile pilot, including model identities, split, scorer,
    retries, seed, budgets, stop conditions, and artifact hashes.
 3. Use SearchQA as the first paper benchmark anchor. Run a reduced development

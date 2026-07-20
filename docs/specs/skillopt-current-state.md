@@ -114,19 +114,23 @@ Build a paper-faithful SkillOpt implementation and produce claims whose scope is
   A separate paper entrypoint freezes exact model identities, data/code/runner
   hashes, semantic retry policy, budgets, and stop conditions before execution.
   Role-isolated signed controllers keep train trajectories and selection scalar
-  responses behind the M2 firewall. The pinned official 40-train/5-selection
-  development slice is materialized with the test payload still absent. Its
-  four-epoch zero-call run completes the full graph with 300 target and 106
-  optimizer logical calls. A bounded two-epoch mechanism dry-run still covers
-  slow/meta and records 140/54 logical calls plus 166,694/412,247 estimated
-  target/optimizer tokens. The first paid attempt
-  `paper-searchqa-mechanism-smoke-c8087f9-v2` stopped at the preregistered
-  initial selection-saturation condition after five selection calls. It made
-  no train or optimizer call and did not access test data. That attempt exposed
-  a missing stop receipt; the runner now persists the initial scalar score,
-  usage, stop reason, and test-access state before returning failure. Model
-  token totals remain auditable but do not stop a run; call and wall-time limits
-  remain hard.
+  responses behind the M2 firewall. Historical materialization v2 preserves
+  the pinned official 40-train/5-selection development slice. Current
+  materialization v3 deterministically expands selection to 20 official items
+  with the same seed, reducing exact-match granularity from 20% to 5% without
+  selecting items by model outcome. Both versions keep the test payload absent.
+  The four-epoch and bounded two-epoch scripted paths complete the full call
+  graph; the bounded scope still covers slow/meta. Model token totals remain
+  auditable but do not stop a run; call and wall-time limits remain hard.
+
+  The paid run `paper-searchqa-mechanism-smoke-c7c8a3e-v3` is invalid as model,
+  selection-saturation, or development evidence because its parser scored Coco
+  session IDs instead of `message.content`. Cached-session replay scored the
+  same five items at 0.8 and 1.0 in two batches, proving both that the recorded
+  0.0 is wrong and that five items can stochastically saturate. The immutable
+  receipt preserves only operational facts: five target calls, zero
+  train/optimizer calls, and no test access. Its invalidation record is
+  `docs/provenance/paper-searchqa-mechanism-smoke-c7c8a3e-v3-invalidation.json`.
 - External editor path through `examples/coding/openai_compatible_skill_editor.py`.
 - Executive optimizer with bounded atomic edits, learning-rate schedule, rejected buffer, validation gate, slow update, meta skill, checkpoint, and early stop.
 - `coding-hidden-v2` builder/validator with contract tags and contract macro accuracy.
@@ -210,22 +214,21 @@ evidence, not as a paper-faithful or held-out baseline-superiority claim.
 
 The contract-aware same-target loop and its one locked attempt are complete.
 The paper contract, runtime firewall, fast engine, default epoch lifecycle, and
-all independent M5 mechanisms are enforced. M6 is green; the M7 SearchQA open
-slice and zero-call graph are verified. Paid empirical development began, but
-the first attempt stopped before optimization because its initial selection
-score was saturated.
+all independent M5 mechanisms are enforced. M6 is green for the historical
+commit; the M7 SearchQA open-data and zero-call paths are verified. Paid
+empirical development has not yet produced a valid full-call-graph result: the
+first persisted attempt was invalidated by the Coco response-parser defect.
 
 Highest-impact remaining gaps:
 
 1. The current executive algorithm is not paper-faithful: selection contract diagnostics and benchmark-specific mechanisms feed optimization, merge/ranking semantics differ, buffer and slow/meta lifecycles differ, and the paper-default run was not exercised.
-2. M7 requires a new clean-commit M6 authorization receipt and a new
-   preregistration after the stop-receipt/token-policy change. Before another
-   paid attempt, use the persisted initial scalar to choose a protocol-safe,
-   deterministic response to selection saturation; do not cherry-pick items by
-   per-item model outcomes. Neither the M6 receipt nor any zero-call dry-run is
-   empirical evidence.
+2. M7 requires a new clean-commit M6 authorization receipt, a 40/20 mechanism
+   dry-run, and a new preregistration. Do not use the invalid v3 scalar and do
+   not cherry-pick items by per-item model outcomes. Neither the M6 receipt nor
+   any zero-call dry-run is empirical evidence.
 3. The consumed `coding-hidden-v2` split cannot support a future paper-faithful held-out claim; a fresh split or official benchmark is required.
-4. The local matrix lacks several paper baselines, ablations, benchmark/model/harness breadth, and target-agent token accounting.
+4. The local matrix lacks several paper baselines, ablations, and
+   benchmark/model/harness breadth.
 
 ## Latest Smoke Result
 

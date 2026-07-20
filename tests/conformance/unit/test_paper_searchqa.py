@@ -16,8 +16,10 @@ from textskill_optimizer.paper.searchqa import (
     SearchQAItem,
     extract_searchqa_answer,
     fetch_searchqa_rows_by_id,
+    get_searchqa_development_materialization_policy,
     load_searchqa_items,
     normalize_searchqa_answer,
+    sample_searchqa_development_ids,
     score_searchqa_response,
     select_searchqa_development_rows,
     verify_searchqa_materialization_receipt,
@@ -171,6 +173,34 @@ class PaperSearchQAContractTests(unittest.TestCase):
                 seed=42,
             )
 
+    def test_materialization_policy_versions_the_larger_smoke_selection(self) -> None:
+        legacy = get_searchqa_development_materialization_policy(
+            train_limit=40,
+            selection_limit=5,
+            seed=42,
+        )
+        current = get_searchqa_development_materialization_policy(
+            train_limit=40,
+            selection_limit=20,
+            seed=42,
+        )
+
+        self.assertEqual(
+            legacy.schema_version,
+            "searchqa-development-materialization-v2",
+        )
+        self.assertEqual(
+            current.schema_version,
+            "searchqa-development-materialization-v3",
+        )
+        self.assertEqual(current.selection_limit, 20)
+        with self.assertRaisesRegex(SearchQAContractViolation, "unsupported"):
+            get_searchqa_development_materialization_policy(
+                train_limit=40,
+                selection_limit=10,
+                seed=42,
+            )
+
     def test_filtered_fetch_requests_only_explicit_ids(self) -> None:
         item_id = "a" * 32
         captured: list[str] = []
@@ -215,7 +245,7 @@ class PaperSearchQAContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             train_ids = [f"{index:032x}" for index in range(40)]
-            selection_ids = [f"{100 + index:032x}" for index in range(5)]
+            selection_ids = [f"{100 + index:032x}" for index in range(20)]
             train_manifest = root / "official-train-ids.json"
             selection_manifest = root / "official-selection-ids.json"
             train_path = root / "train.json"
@@ -240,11 +270,6 @@ class PaperSearchQAContractTests(unittest.TestCase):
                     for item_id in ids
                 ]
 
-            train_path.write_text(json.dumps(items(train_ids)), encoding="utf-8")
-            selection_path.write_text(
-                json.dumps(items(selection_ids)), encoding="utf-8"
-            )
-
             def sha(path):
                 return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -253,43 +278,94 @@ class PaperSearchQAContractTests(unittest.TestCase):
                 "selection": sha(selection_manifest),
                 "test": "f" * 64,
             }
-            receipt = {
-                "schema_version": "searchqa-development-materialization-v2",
-                "source_repo": "lucadiliello/searchqa",
-                "source_revision": SEARCHQA_DATASET_REVISION,
-                "source_access": {
-                    "method": "hf_dataset_server_filter_v1",
-                    "endpoint": SEARCHQA_DATASET_SERVER_ENDPOINT,
-                    "source_main_revision": SEARCHQA_DATASET_REVISION,
-                    "queried_splits": ["train", "validation"],
-                    "requested_id_count": 45,
-                    "received_id_count": 45,
-                },
-                "official_manifest_sha256": {
-                    "train": hashes["train"],
-                    "selection": hashes["selection"],
-                    "test_commitment": hashes["test"],
-                },
-                "manifest_files": {
-                    "train": {"path": str(train_manifest), "sha256": hashes["train"]},
-                    "selection": {
-                        "path": str(selection_manifest),
-                        "sha256": hashes["selection"],
-                    },
-                },
-                "sample": {"seed": 42, "train_limit": 40, "selection_limit": 5},
-                "counts": {"train": 40, "selection": 5},
-                "outputs": {
-                    "train": {"path": str(train_path), "sha256": sha(train_path)},
-                    "selection": {
-                        "path": str(selection_path),
-                        "sha256": sha(selection_path),
-                    },
-                },
-                "test_payload_status": "not_materialized",
-            }
             receipt_path = root / "materialization-receipt.json"
-            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            output_hashes = {}
+            for schema_version, selection_limit in (
+                ("searchqa-development-materialization-v2", 5),
+                ("searchqa-development-materialization-v3", 20),
+            ):
+                with self.subTest(schema_version=schema_version):
+                    sampled = sample_searchqa_development_ids(
+                        train_ids=train_ids,
+                        selection_ids=selection_ids,
+                        train_limit=40,
+                        selection_limit=selection_limit,
+                        seed=42,
+                    )
+                    train_path.write_text(
+                        json.dumps(items(sampled["train"])), encoding="utf-8"
+                    )
+                    selection_path.write_text(
+                        json.dumps(items(sampled["selection"])), encoding="utf-8"
+                    )
+                    output_hashes[schema_version] = {
+                        "train": sha(train_path),
+                        "selection": sha(selection_path),
+                    }
+                    receipt = {
+                        "schema_version": schema_version,
+                        "source_repo": "lucadiliello/searchqa",
+                        "source_revision": SEARCHQA_DATASET_REVISION,
+                        "source_access": {
+                            "method": "hf_dataset_server_filter_v1",
+                            "endpoint": SEARCHQA_DATASET_SERVER_ENDPOINT,
+                            "source_main_revision": SEARCHQA_DATASET_REVISION,
+                            "queried_splits": ["train", "validation"],
+                            "requested_id_count": 40 + selection_limit,
+                            "received_id_count": 40 + selection_limit,
+                        },
+                        "official_manifest_sha256": {
+                            "train": hashes["train"],
+                            "selection": hashes["selection"],
+                            "test_commitment": hashes["test"],
+                        },
+                        "manifest_files": {
+                            "train": {
+                                "path": str(train_manifest),
+                                "sha256": hashes["train"],
+                            },
+                            "selection": {
+                                "path": str(selection_manifest),
+                                "sha256": hashes["selection"],
+                            },
+                        },
+                        "sample": {
+                            "seed": 42,
+                            "train_limit": 40,
+                            "selection_limit": selection_limit,
+                        },
+                        "counts": {"train": 40, "selection": selection_limit},
+                        "outputs": {
+                            "train": {
+                                "path": str(train_path),
+                                "sha256": sha(train_path),
+                            },
+                            "selection": {
+                                "path": str(selection_path),
+                                "sha256": sha(selection_path),
+                            },
+                        },
+                        "test_payload_status": "not_materialized",
+                    }
+                    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+                    with patch.dict(
+                        "textskill_optimizer.paper.searchqa."
+                        "OFFICIAL_SEARCHQA_ID_MANIFEST_SHA256",
+                        hashes,
+                        clear=True,
+                    ), patch.dict(
+                        "textskill_optimizer.paper.searchqa."
+                        "OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256_BY_SCHEMA",
+                        output_hashes,
+                        clear=True,
+                    ):
+                        verified = verify_searchqa_materialization_receipt(
+                            receipt_path,
+                            train_path=train_path,
+                            selection_path=selection_path,
+                        )
+
+            train_path.write_text("[]", encoding="utf-8")
             with patch.dict(
                 "textskill_optimizer.paper.searchqa."
                 "OFFICIAL_SEARCHQA_ID_MANIFEST_SHA256",
@@ -297,16 +373,10 @@ class PaperSearchQAContractTests(unittest.TestCase):
                 clear=True,
             ), patch.dict(
                 "textskill_optimizer.paper.searchqa."
-                "OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256",
-                {"train": sha(train_path), "selection": sha(selection_path)},
+                "OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256_BY_SCHEMA",
+                output_hashes,
                 clear=True,
             ):
-                verified = verify_searchqa_materialization_receipt(
-                    receipt_path,
-                    train_path=train_path,
-                    selection_path=selection_path,
-                )
-                train_path.write_text("[]", encoding="utf-8")
                 with self.assertRaisesRegex(SearchQAContractViolation, "hash drift"):
                     verify_searchqa_materialization_receipt(
                         receipt_path,
