@@ -1,0 +1,45 @@
+README.md
+  s_51962c641b3cb0::t_49eaeb5f3c8919 65-69,111-115
+audit/delivery-audit-20260720-c8087f9-token-policy/audit-report.md
+  s_51962c641b3cb0::t_436ae4c9dd93df 1-60
+audit/delivery-audit-20260720-c8087f9-token-policy/evidence-log.md
+  s_51962c641b3cb0::t_7e3dca9807e475 1-49
+audit/delivery-audit-20260720-c8087f9-token-policy/review-findings.md
+  s_51962c641b3cb0::t_3de977236b3bd2 1-17
+audit/delivery-audit-20260720-c8087f9-token-policy/traceability-matrix.md
+  s_51962c641b3cb0::t_4f4f02104b0fbd 1-18
+docs/specs/skillopt-current-state.md
+  s_51962c641b3cb0::t_b7e1188c91cf28 3,17,122-129,214-216,221-226,501-504
+docs/specs/skillopt-paper-faithful-roadmap.md
+  s_51962c641b3cb0::t_c40603f078e84c 371-376,639-640
+tests/conformance/integration/test_paper_searchqa_experiment.py
+  s_51962c641b3cb0::t_e5c9f9da6af60e 140-185,307
+tests/conformance/unit/test_paper_preregistration.py
+  s_51962c641b3cb0::t_7ba4273454f47c 55,91,152-162
+tests/conformance/unit/test_paper_searchqa.py
+  s_51962c641b3cb0::t_ad30b6d4c458bc 29,337,359,364-367,371,374-378,381-398
+textskill_optimizer/paper/preregistration.py
+  s_51962c641b3cb0::t_afeeb60a45dfc1 198,474,560,593-596
+textskill_optimizer/paper/searchqa_controller_runtime.py
+  s_51962c641b3cb0::t_b09c41523053bf 56
+textskill_optimizer/paper/searchqa_experiment.py
+  s_51962c641b3cb0::t_0dbc7182d49120 82,96,444,482,668-701,1143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c7c8a3e685acc351a26a0d8365d20ba04a23c0f1",
+  "prompts": {},
+  "sessions": {
+    "s_51962c641b3cb0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6a73-0735-7d83-9d00-dc04d561f69a",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
