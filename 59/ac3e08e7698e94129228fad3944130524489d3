@@ -1,0 +1,23 @@
+tests/conformance/unit/test_paper_searchqa.py
+  s_51962c641b3cb0::t_ebcfde0171bf5f 31-34,59-99
+textskill_optimizer/paper/searchqa_controller_runtime.py
+  s_51962c641b3cb0::t_c8c065d54e9bfb 321-329
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "59ac3e08e7698e94129228fad3944130524489d3",
+  "prompts": {},
+  "sessions": {
+    "s_51962c641b3cb0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6a73-0735-7d83-9d00-dc04d561f69a",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
