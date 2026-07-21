@@ -1,0 +1,23 @@
+textskill_optimizer/paper/searchqa_controller_runtime.py
+  s_51962c641b3cb0::t_05557f351d850c 45-59,86,100-101,289-312,314-321,323-337,673-683,765-769,850,863,870-874
+textskill_optimizer/paper/searchqa_experiment.py
+  s_51962c641b3cb0::t_6f85d95724d6c9 207,221-223,272-274,276-277,281-287,293-299,305-314,316,318-323,334-335,344-358,360-366,369-373,383-384,1117-1123,1126-1127,1135-1143,1145-1148,1194-1209
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "93dd698e1b6f59b3d63eaccf6fb1d91010f9ea33",
+  "prompts": {},
+  "sessions": {
+    "s_51962c641b3cb0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6a73-0735-7d83-9d00-dc04d561f69a",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
