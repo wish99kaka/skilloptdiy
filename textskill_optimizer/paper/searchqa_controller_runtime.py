@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
+import queue
 import random
 import re
 import subprocess
@@ -13,7 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -25,6 +27,9 @@ from .searchqa import SearchQAItem, load_searchqa_items, score_searchqa_response
 SCRIPTED_IMPROVEMENT_TOKEN = "Return only the shortest answer supported by context."
 MAX_CONTEXT_CHARS = 6000
 TARGET_WORKERS = 24
+COCO_ACP_WORKERS = 5
+ACP_PROTOCOL_VERSION = 1
+ACP_STARTUP_TIMEOUT_SECONDS = 30.0
 _USAGE_LOCK = threading.Lock()
 
 
@@ -35,6 +40,383 @@ class TargetResult:
     completion_tokens: int
     tokens_are_actual: bool
     duration_seconds: float
+
+
+class _ACPConnection:
+    """One serial JSON-RPC connection over ACP's line-delimited stdio transport."""
+
+    _CLOSED = object()
+
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            raise RuntimeError("Coco ACP process pipes are unavailable")
+        self._process = process
+        self._stdin = process.stdin
+        self._stdout = process.stdout
+        self._stderr = process.stderr
+        self._events: queue.Queue[object] = queue.Queue()
+        self._stderr_tail: collections.deque[str] = collections.deque(maxlen=80)
+        self._messages: dict[str, list[str]] = {}
+        self._request_id = 0
+        self._write_lock = threading.Lock()
+        threading.Thread(target=self._read_stdout, daemon=True).start()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
+
+    def request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> dict[str, Any]:
+        if timeout <= 0:
+            raise TimeoutError(f"Coco ACP {method} timed out")
+        self._request_id += 1
+        request_id = self._request_id
+        self._write(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            }
+        )
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Coco ACP {method} timed out")
+            try:
+                event = self._events.get(timeout=remaining)
+            except queue.Empty as error:
+                raise TimeoutError(f"Coco ACP {method} timed out") from error
+            if event is self._CLOSED:
+                detail = "".join(self._stderr_tail)[-500:].strip()
+                suffix = f": {detail}" if detail else ""
+                raise RuntimeError(f"Coco ACP connection closed during {method}{suffix}")
+            if isinstance(event, Exception):
+                raise event
+            if type(event) is not dict:
+                raise RuntimeError("Coco ACP emitted a non-object JSON-RPC message")
+            incoming = event
+            incoming_method = incoming.get("method")
+            if type(incoming_method) is str:
+                self._handle_incoming_method(incoming)
+                continue
+            if incoming.get("id") != request_id:
+                raise RuntimeError("Coco ACP returned an unexpected JSON-RPC response id")
+            error_payload = incoming.get("error")
+            if error_payload is not None:
+                raise RuntimeError(
+                    f"Coco ACP {method} failed: "
+                    f"{json.dumps(error_payload, ensure_ascii=False, sort_keys=True)}"
+                )
+            result = incoming.get("result")
+            if type(result) is not dict:
+                raise RuntimeError(f"Coco ACP {method} result must be an object")
+            return result
+
+    def take_message(self, session_id: str) -> str:
+        return "".join(self._messages.pop(session_id, [])).strip()
+
+    def close(self) -> None:
+        try:
+            self._stdin.close()
+        except OSError:
+            pass
+        if self._process.poll() is not None:
+            return
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait(timeout=3.0)
+
+    def _read_stdout(self) -> None:
+        try:
+            for line in self._stdout:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError as error:
+                    self._events.put(
+                        RuntimeError("Coco ACP emitted invalid JSON-RPC output")
+                    )
+                    self._stderr_tail.append(f"stdout parse error: {error}\n")
+                    continue
+                self._events.put(payload)
+        finally:
+            self._events.put(self._CLOSED)
+
+    def _read_stderr(self) -> None:
+        for line in self._stderr:
+            self._stderr_tail.append(line)
+
+    def _write(self, payload: dict[str, Any]) -> None:
+        serialized = canonical_json(payload)
+        try:
+            with self._write_lock:
+                self._stdin.write(serialized + "\n")
+                self._stdin.flush()
+        except (BrokenPipeError, OSError) as error:
+            detail = "".join(self._stderr_tail)[-500:].strip()
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(f"Coco ACP connection write failed{suffix}") from error
+
+    def _handle_incoming_method(self, payload: dict[str, Any]) -> None:
+        if payload["method"] == "session/update":
+            params = payload.get("params")
+            if type(params) is not dict:
+                raise RuntimeError("Coco ACP session/update params must be an object")
+            session_id = params.get("sessionId")
+            update = params.get("update")
+            if type(session_id) is not str or type(update) is not dict:
+                raise RuntimeError("Coco ACP session/update is malformed")
+            if update.get("sessionUpdate") == "agent_message_chunk":
+                content = update.get("content")
+                if type(content) is not dict or content.get("type") != "text":
+                    raise RuntimeError("Coco ACP agent message chunk must be text")
+                text = content.get("text")
+                if type(text) is not str:
+                    raise RuntimeError("Coco ACP agent message text is malformed")
+                self._messages.setdefault(session_id, []).append(text)
+        if "id" in payload:
+            self._write(
+                {
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "error": {"code": -32601, "message": "Method not found"},
+                }
+            )
+
+
+class _CocoACPWorker:
+    def __init__(
+        self,
+        *,
+        worker_id: int,
+        cwd: Path,
+        connection: _ACPConnection,
+        primed_session_id: str,
+    ) -> None:
+        self.worker_id = worker_id
+        self._cwd = cwd
+        self._connection = connection
+        self._primed_session_id = primed_session_id
+        self._lock = threading.Lock()
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        worker_id: int,
+        binary: Path,
+        cwd: Path,
+        timeout: float,
+    ) -> _CocoACPWorker:
+        if not binary.is_file():
+            raise RuntimeError("preregistered Coco binary is missing")
+        process = subprocess.Popen(
+            [
+                str(binary),
+                "acp",
+                "serve",
+                "--permission-mode",
+                "bypass_permissions",
+            ],
+            cwd=str(cwd),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        connection = _ACPConnection(process)
+        deadline = time.monotonic() + timeout
+        try:
+            initialized = connection.request(
+                "initialize",
+                {
+                    "protocolVersion": ACP_PROTOCOL_VERSION,
+                    "clientCapabilities": {
+                        "fs": {"readTextFile": False, "writeTextFile": False},
+                        "terminal": False,
+                    },
+                },
+                timeout=_remaining(deadline, "Coco ACP initialization"),
+            )
+            if initialized.get("protocolVersion") != ACP_PROTOCOL_VERSION:
+                raise RuntimeError("Coco ACP protocol version is not supported")
+            session_id = cls._new_session(
+                connection,
+                cwd,
+                timeout=_remaining(deadline, "Coco ACP session initialization"),
+            )
+        except Exception:
+            connection.close()
+            raise
+        return cls(
+            worker_id=worker_id,
+            cwd=cwd,
+            connection=connection,
+            primed_session_id=session_id,
+        )
+
+    def prompt(self, prompt: str, *, timeout: float) -> TargetResult:
+        with self._lock:
+            started = time.monotonic()
+            deadline = started + timeout
+            session_id = self._primed_session_id
+            if session_id:
+                self._primed_session_id = ""
+            else:
+                session_id = self._new_session(
+                    self._connection,
+                    self._cwd,
+                    timeout=_remaining(deadline, "Coco ACP session creation"),
+                )
+            result = self._connection.request(
+                "session/prompt",
+                {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": prompt}],
+                },
+                timeout=_remaining(deadline, "Coco ACP prompt"),
+            )
+            response = self._connection.take_message(session_id)
+            if not response:
+                raise RuntimeError("Coco ACP prompt did not emit an assistant message")
+            usage = result.get("usage")
+            if type(usage) is not dict:
+                raise RuntimeError(
+                    "Coco ACP prompt did not expose token usage; paid M7 execution is blocked"
+                )
+            prompt_tokens = _usage_integer(usage, ("inputTokens",))
+            completion_tokens = _usage_integer(usage, ("outputTokens",))
+            return TargetResult(
+                response=response,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                tokens_are_actual=True,
+                duration_seconds=time.monotonic() - started,
+            )
+
+    def close(self) -> None:
+        self._connection.close()
+
+    @staticmethod
+    def _new_session(
+        connection: _ACPConnection,
+        cwd: Path,
+        *,
+        timeout: float,
+    ) -> str:
+        result = connection.request(
+            "session/new",
+            {"cwd": str(cwd), "mcpServers": []},
+            timeout=timeout,
+        )
+        session_id = result.get("sessionId")
+        if type(session_id) is not str or not session_id:
+            raise RuntimeError("Coco ACP returned an invalid session id")
+        return session_id
+
+
+class CocoACPWorkerPool:
+    """Five isolated Coco processes, serialized at startup and concurrent afterward."""
+
+    def __init__(self, workers: list[Any]) -> None:
+        self._workers = workers
+        self._available: queue.Queue[Any] = queue.Queue()
+        for worker in workers:
+            self._available.put(worker)
+        self._failure: Exception | None = None
+        self._state_lock = threading.Lock()
+        self._closed = False
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        binary: Path,
+        cwd: Path,
+        task_count: int,
+        startup_timeout: Callable[[], float],
+        worker_factory: Callable[..., Any] | None = None,
+    ) -> CocoACPWorkerPool:
+        if task_count <= 0:
+            raise ValueError("Coco ACP pool requires at least one task")
+        factory = worker_factory or _CocoACPWorker.start
+        workers: list[Any] = []
+        try:
+            for worker_id in range(min(COCO_ACP_WORKERS, task_count)):
+                available_startup_time = startup_timeout()
+                if available_startup_time <= 0:
+                    raise TimeoutError("Coco ACP worker startup timed out")
+                workers.append(
+                    factory(
+                        worker_id=worker_id,
+                        binary=binary,
+                        cwd=cwd,
+                        timeout=min(
+                            ACP_STARTUP_TIMEOUT_SECONDS,
+                            available_startup_time,
+                        ),
+                    )
+                )
+        except Exception:
+            for worker in reversed(workers):
+                worker.close()
+            raise
+        return cls(workers)
+
+    def prompt(self, prompt: str, *, timeout: float) -> TargetResult:
+        deadline = time.monotonic() + timeout
+        with self._state_lock:
+            self._require_healthy()
+        try:
+            worker = self._available.get(
+                timeout=_remaining(deadline, "Coco ACP worker acquisition")
+            )
+        except queue.Empty as error:
+            raise TimeoutError("Coco ACP worker acquisition timed out") from error
+        try:
+            with self._state_lock:
+                self._require_healthy()
+            return worker.prompt(
+                prompt,
+                timeout=_remaining(deadline, "Coco ACP target prompt"),
+            )
+        except Exception as error:
+            with self._state_lock:
+                if self._failure is None:
+                    self._failure = error
+            raise
+        finally:
+            self._available.put(worker)
+
+    def close(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+        for worker in reversed(self._workers):
+            worker.close()
+
+    def _require_healthy(self) -> None:
+        if self._closed:
+            raise RuntimeError("Coco ACP worker pool is closed")
+        if self._failure is not None:
+            raise RuntimeError("Coco ACP worker pool stopped after a worker failure") from self._failure
+
+
+def _remaining(deadline: float, operation: str) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError(f"{operation} timed out")
+    return remaining
 
 
 class TargetBudgetGuard:
@@ -136,15 +518,26 @@ def _collect_train(
         batch_seed=request["batch_seed"],
         batch_size=request["batch_size"],
     )
-    with ThreadPoolExecutor(max_workers=min(TARGET_WORKERS, len(batch))) as executor:
-        trajectories = list(
-            executor.map(
-                lambda item: _trajectory(
-                    args, request["skill_text"], item, guard=guard
-                ),
-                batch,
+    coco_pool = _start_coco_pool(args, task_count=len(batch), guard=guard)
+    try:
+        with ThreadPoolExecutor(
+            max_workers=_target_worker_count(args, len(batch))
+        ) as executor:
+            trajectories = list(
+                executor.map(
+                    lambda item: _trajectory(
+                        args,
+                        request["skill_text"],
+                        item,
+                        guard=guard,
+                        coco_pool=coco_pool,
+                    ),
+                    batch,
+                )
             )
-        )
+    finally:
+        if coco_pool is not None:
+            coco_pool.close()
     return {
         "split_id": request["split_id"],
         "split_manifest_sha256": request["split_manifest_sha256"],
@@ -167,15 +560,26 @@ def _score_selection(
         raise ValueError("selection controller request fields do not match the contract")
     if request["operation"] != "score_selection":
         raise ValueError("selection controller received an invalid operation")
-    with ThreadPoolExecutor(max_workers=min(TARGET_WORKERS, len(items))) as executor:
-        scores = list(
-            executor.map(
-                lambda item: _evaluate_target(
-                    args, request["skill_text"], item, guard=guard
-                )[1],
-                items,
+    coco_pool = _start_coco_pool(args, task_count=len(items), guard=guard)
+    try:
+        with ThreadPoolExecutor(
+            max_workers=_target_worker_count(args, len(items))
+        ) as executor:
+            scores = list(
+                executor.map(
+                    lambda item: _evaluate_target(
+                        args,
+                        request["skill_text"],
+                        item,
+                        guard=guard,
+                        coco_pool=coco_pool,
+                    )[1],
+                    items,
+                )
             )
-        )
+    finally:
+        if coco_pool is not None:
+            coco_pool.close()
     return {"score": float(sum(scores) / len(scores))}
 
 
@@ -185,8 +589,15 @@ def _trajectory(
     item: SearchQAItem,
     *,
     guard: TargetBudgetGuard | None,
+    coco_pool: CocoACPWorkerPool | None,
 ) -> dict[str, Any]:
-    result, exact_match = _evaluate_target(args, skill_text, item, guard=guard)
+    result, exact_match = _evaluate_target(
+        args,
+        skill_text,
+        item,
+        guard=guard,
+        coco_pool=coco_pool,
+    )
     return {
         "task_id": item.item_id,
         "task_input": {"question": item.question, "context": item.context},
@@ -203,6 +614,7 @@ def _evaluate_target(
     item: SearchQAItem,
     *,
     guard: TargetBudgetGuard | None,
+    coco_pool: CocoACPWorkerPool | None = None,
 ) -> tuple[TargetResult, float]:
     prompt_template = args.rollout_prompt.read_text(encoding="utf-8")
     skill_section = f"## Skill\n{skill_text.strip()}\n\n" if skill_text.strip() else ""
@@ -218,7 +630,12 @@ def _evaluate_target(
         result = _scripted_target(prompt, skill_text, item)
     else:
         try:
-            result = _coco_target(args, prompt, guard=guard)
+            result = _coco_target(
+                args,
+                prompt,
+                guard=guard,
+                coco_pool=coco_pool,
+            )
         except Exception as error:
             _append_failed_usage(args, item, prompt=prompt, error=error)
             raise
@@ -263,87 +680,43 @@ def _coco_target(
     prompt: str,
     *,
     guard: TargetBudgetGuard | None,
+    coco_pool: CocoACPWorkerPool | None,
 ) -> TargetResult:
     if args.coco_binary is None or not args.coco_binary.is_file():
         raise RuntimeError("preregistered Coco binary is missing")
+    if coco_pool is None:
+        raise RuntimeError("Coco ACP worker pool is unavailable")
     timeout = 120.0
     if guard is not None:
         timeout = min(timeout, guard.remaining_seconds())
-    argv = [
-        str(args.coco_binary),
-        "--print",
-        "--output-format",
-        "json",
-        "--permission-mode",
-        "bypass_permissions",
-        "--query-timeout",
-        "2m",
-        prompt,
-    ]
-    started = time.monotonic()
-    completed = subprocess.run(
-        argv,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-    )
-    duration = time.monotonic() - started
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"Coco target failed with exit code {completed.returncode}: "
-            f"{completed.stderr[-500:]}"
-        )
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as error:
-        raise RuntimeError("Coco JSON output is not valid JSON") from error
-    response = _find_response_text(payload)
-    usage = _find_usage(payload)
-    if usage is None:
-        raise RuntimeError(
-            "Coco JSON output did not expose token usage; paid M7 execution is blocked"
-        )
-    prompt_tokens = _usage_integer(usage, ("prompt_tokens", "input_tokens"))
-    completion_tokens = _usage_integer(
-        usage, ("completion_tokens", "output_tokens")
-    )
-    return TargetResult(
-        response=response,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        tokens_are_actual=True,
-        duration_seconds=duration,
+    return coco_pool.prompt(prompt, timeout=timeout)
+
+
+def _start_coco_pool(
+    args: argparse.Namespace,
+    *,
+    task_count: int,
+    guard: TargetBudgetGuard | None,
+) -> CocoACPWorkerPool | None:
+    if args.backend != "coco":
+        return None
+    if args.coco_binary is None or not args.coco_binary.is_file():
+        raise RuntimeError("preregistered Coco binary is missing")
+
+    def startup_timeout() -> float:
+        return guard.remaining_seconds() if guard is not None else ACP_STARTUP_TIMEOUT_SECONDS
+
+    return CocoACPWorkerPool.start(
+        binary=args.coco_binary,
+        cwd=Path.cwd().resolve(),
+        task_count=task_count,
+        startup_timeout=startup_timeout,
     )
 
 
-def _find_response_text(payload: Any) -> str:
-    if type(payload) is not dict:
-        raise RuntimeError("Coco JSON output must be an object")
-    message = payload.get("message")
-    if type(message) is not dict or message.get("role") != "assistant":
-        raise RuntimeError("Coco JSON output did not contain an assistant message")
-    content = message.get("content")
-    if type(content) is not str or not content.strip():
-        raise RuntimeError("Coco JSON output assistant message content must be non-empty")
-    return content
-
-
-def _find_usage(payload: Any) -> dict[str, Any] | None:
-    if type(payload) is dict:
-        usage = payload.get("usage")
-        if type(usage) is dict:
-            return usage
-        for value in payload.values():
-            found = _find_usage(value)
-            if found is not None:
-                return found
-    elif type(payload) is list:
-        for value in reversed(payload):
-            found = _find_usage(value)
-            if found is not None:
-                return found
-    return None
+def _target_worker_count(args: argparse.Namespace, task_count: int) -> int:
+    limit = COCO_ACP_WORKERS if args.backend == "coco" else TARGET_WORKERS
+    return min(limit, task_count)
 
 
 def _usage_integer(usage: dict[str, Any], names: tuple[str, ...]) -> int:
@@ -434,6 +807,11 @@ def _append_failed_usage(
     error: Exception,
 ) -> None:
     args.usage_ledger.parent.mkdir(parents=True, exist_ok=True)
+    error_message = str(error)
+    if len(error_message) > 1000:
+        error_message = (
+            error_message[:500] + "...[truncated]..." + error_message[-483:]
+        )
     record = {
         "kind": "target_model",
         "model_id": args.target_model,
@@ -449,6 +827,7 @@ def _append_failed_usage(
         "duration_seconds": 0.0,
         "failed": True,
         "error_type": type(error).__name__,
+        "error_message": error_message,
     }
     with _USAGE_LOCK:
         with args.usage_ledger.open("a", encoding="utf-8") as stream:

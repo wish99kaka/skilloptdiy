@@ -329,8 +329,10 @@ def invoke_optimization_controller(
     except (OSError, subprocess.TimeoutExpired) as error:
         raise DataFirewallViolation("controller process could not complete") from error
     if completed.returncode != 0:
+        stderr_tail = completed.stderr[-2000:].strip()
+        detail = f": {stderr_tail}" if stderr_tail else ""
         raise DataFirewallViolation(
-            f"controller process failed with exit code {completed.returncode}"
+            f"controller process failed with exit code {completed.returncode}{detail}"
         )
     return parse_signed_response(
         registration=registration,

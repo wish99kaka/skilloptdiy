@@ -45,7 +45,11 @@ from .searchqa import (
     load_searchqa_items,
     verify_searchqa_materialization_receipt,
 )
-from .searchqa_controller_runtime import SCRIPTED_IMPROVEMENT_TOKEN
+from .searchqa_controller_runtime import (
+    ACP_STARTUP_TIMEOUT_SECONDS,
+    COCO_ACP_WORKERS,
+    SCRIPTED_IMPROVEMENT_TOKEN,
+)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -660,11 +664,70 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
         json.loads(prereg.artifact("plan").path.read_text(encoding="utf-8"))
     )
     loop = PaperEpochLoop(controller, profile=profile, plan=plan)
-    initial_state = loop.initialize(
-        prereg.artifact("initial_skill").path.read_text(encoding="utf-8")
-    )
-    selection_unsaturated = 0.0 < initial_state.current_score.value < 1.0
-    if not selection_unsaturated:
+    receipt_path = run_root / "receipt.json"
+    completed_steps = 0
+    initial_state = None
+    selection_unsaturated = None
+    try:
+        initial_state = loop.initialize(
+            prereg.artifact("initial_skill").path.read_text(encoding="utf-8")
+        )
+        selection_unsaturated = 0.0 < initial_state.current_score.value < 1.0
+        if not selection_unsaturated:
+            wall_time = time.monotonic() - started
+            usage = _usage_summary(
+                Path(authorities["train_usage_path"]),
+                Path(authorities["selection_usage_path"]),
+                optimizer_backend=backend,
+            )
+            event_counts = Counter(event.event_type.value for event in loop.events)
+            _write_json(
+                receipt_path,
+                {
+                    "schema_version": "paper-searchqa-development-stop-receipt-v1",
+                    "status": "stopped",
+                    "stage": prereg.stage,
+                    "stop_reason": "selection_saturation",
+                    "preregistration_sha256": _sha256(prereg.source_path),
+                    "profile_sha256": canonical_json_sha256(profile.to_dict()),
+                    "plan_sha256": canonical_json_sha256(plan.to_dict()),
+                    "completed_epochs": 0,
+                    "completed_steps": 0,
+                    "initial_selection_score": initial_state.current_score.value,
+                    "best_selection_score": initial_state.best_score.value,
+                    "selection_unsaturated": False,
+                    "full_call_graph_complete": False,
+                    "event_counts": dict(sorted(event_counts.items())),
+                    "usage": usage,
+                    "wall_time_seconds": wall_time,
+                    "test_access": dict(payload["test_access"]),
+                    "test_payload_status": payload["benchmark"][
+                        "test_payload_status"
+                    ],
+                    "claim_class": None,
+                    "evidence_level": None,
+                },
+            )
+            prereg.verify()
+            raise RuntimeError("selection_saturation stop condition triggered")
+        if budget_guard is not None:
+            budget_guard.check()
+        while True:
+            while loop.state.step < plan.steps_per_epoch:
+                loop.run_step(train_evidence=loop.collect_train_evidence())
+                completed_steps += 1
+                if budget_guard is not None:
+                    budget_guard.check()
+            longitudinal = (
+                loop.collect_longitudinal_evidence()
+                if loop.state.epoch >= profile.slow_update.start_epoch
+                else None
+            )
+            completion = loop.finish_epoch(longitudinal_evidence=longitudinal)
+            if budget_guard is not None:
+                budget_guard.check()
+            if completion.run_completed:
+                break
         wall_time = time.monotonic() - started
         usage = _usage_summary(
             Path(authorities["train_usage_path"]),
@@ -672,83 +735,89 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
             optimizer_backend=backend,
         )
         event_counts = Counter(event.event_type.value for event in loop.events)
-        receipt_path = run_root / "receipt.json"
-        _write_json(
-            receipt_path,
-            {
-                "schema_version": "paper-searchqa-development-stop-receipt-v1",
-                "status": "stopped",
-                "stage": prereg.stage,
-                "stop_reason": "selection_saturation",
-                "preregistration_sha256": _sha256(prereg.source_path),
-                "profile_sha256": canonical_json_sha256(profile.to_dict()),
-                "plan_sha256": canonical_json_sha256(plan.to_dict()),
-                "completed_epochs": 0,
-                "completed_steps": 0,
-                "initial_selection_score": initial_state.current_score.value,
-                "best_selection_score": initial_state.best_score.value,
-                "selection_unsaturated": False,
-                "full_call_graph_complete": False,
-                "event_counts": dict(sorted(event_counts.items())),
-                "usage": usage,
-                "wall_time_seconds": wall_time,
-                "test_access": dict(payload["test_access"]),
-                "test_payload_status": payload["benchmark"]["test_payload_status"],
-                "claim_class": None,
-                "evidence_level": None,
-            },
+        required_events = {
+            "run_started",
+            "failure_reflected",
+            "success_reflected",
+            "analyst_refined",
+            "merge_failure",
+            "merge_success",
+            "merge_final_failure_prioritized",
+            "rank_top_l",
+            "patch_applied",
+            "selection_scored",
+            "slow_update_skipped",
+            "slow_update_proposed",
+            "meta_update_skipped",
+            "meta_update_completed",
+            "run_completed",
+        }
+        full_graph = all(event_counts[name] > 0 for name in required_events) and (
+            event_counts["candidate_accepted"]
+            + event_counts["candidate_rejected"]
+            > 0
         )
-        prereg.verify()
-        raise RuntimeError("selection_saturation stop condition triggered")
-    if budget_guard is not None:
-        budget_guard.check()
-    completed_steps = 0
-    while True:
-        while loop.state.step < plan.steps_per_epoch:
-            loop.run_step(train_evidence=loop.collect_train_evidence())
-            completed_steps += 1
-            if budget_guard is not None:
-                budget_guard.check()
-        longitudinal = (
-            loop.collect_longitudinal_evidence()
-            if loop.state.epoch >= profile.slow_update.start_epoch
-            else None
-        )
-        completion = loop.finish_epoch(longitudinal_evidence=longitudinal)
-        if budget_guard is not None:
-            budget_guard.check()
-        if completion.run_completed:
-            break
-    wall_time = time.monotonic() - started
-    usage = _usage_summary(
-        Path(authorities["train_usage_path"]),
-        Path(authorities["selection_usage_path"]),
-        optimizer_backend=backend,
-    )
-    event_counts = Counter(event.event_type.value for event in loop.events)
-    required_events = {
-        "run_started",
-        "failure_reflected",
-        "success_reflected",
-        "analyst_refined",
-        "merge_failure",
-        "merge_success",
-        "merge_final_failure_prioritized",
-        "rank_top_l",
-        "patch_applied",
-        "selection_scored",
-        "slow_update_skipped",
-        "slow_update_proposed",
-        "meta_update_skipped",
-        "meta_update_completed",
-        "run_completed",
-    }
-    full_graph = all(event_counts[name] > 0 for name in required_events) and (
-        event_counts["candidate_accepted"] + event_counts["candidate_rejected"] > 0
-    )
-    _require_within_budgets(payload["budgets"], usage, wall_time)
-    if not full_graph:
-        raise RuntimeError("zero-call dry-run did not execute the full call graph")
+        _require_within_budgets(payload["budgets"], usage, wall_time)
+        if not full_graph:
+            raise RuntimeError("zero-call dry-run did not execute the full call graph")
+    except Exception as error:
+        if not receipt_path.exists():
+            wall_time = time.monotonic() - started
+            usage = _usage_summary(
+                Path(authorities["train_usage_path"]),
+                Path(authorities["selection_usage_path"]),
+                optimizer_backend=backend,
+            )
+            event_counts = Counter(event.event_type.value for event in loop.events)
+            error_message = str(error)
+            if len(error_message) > 2000:
+                error_message = (
+                    error_message[:1000]
+                    + "...[truncated]..."
+                    + error_message[-983:]
+                )
+            state = loop.state if initial_state is not None else None
+            _write_json(
+                receipt_path,
+                {
+                    "schema_version": "paper-searchqa-development-stop-receipt-v1",
+                    "status": "stopped",
+                    "stage": prereg.stage,
+                    "stop_reason": (
+                        "budget_breach"
+                        if error_message.startswith("budget_breach")
+                        else "execution_error"
+                    ),
+                    "error_type": type(error).__name__,
+                    "error_message": error_message,
+                    "preregistration_sha256": _sha256(prereg.source_path),
+                    "profile_sha256": canonical_json_sha256(profile.to_dict()),
+                    "plan_sha256": canonical_json_sha256(plan.to_dict()),
+                    "completed_epochs": state.epoch if state is not None else 0,
+                    "completed_steps": completed_steps,
+                    "initial_selection_score": (
+                        initial_state.current_score.value
+                        if initial_state is not None
+                        else None
+                    ),
+                    "best_selection_score": (
+                        state.best_score.value if state is not None else None
+                    ),
+                    "selection_unsaturated": selection_unsaturated,
+                    "full_call_graph_complete": False,
+                    "event_counts": dict(sorted(event_counts.items())),
+                    "usage": usage,
+                    "wall_time_seconds": wall_time,
+                    "test_access": dict(payload["test_access"]),
+                    "test_payload_status": payload["benchmark"][
+                        "test_payload_status"
+                    ],
+                    "claim_class": None,
+                    "evidence_level": None,
+                },
+            )
+            prereg.verify()
+        raise
     receipt = {
         "schema_version": "paper-searchqa-development-receipt-v1",
         "status": "completed",
@@ -770,7 +839,6 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
         "claim_class": "mechanism_test",
         "evidence_level": None,
     }
-    receipt_path = run_root / "receipt.json"
     _write_json(receipt_path, receipt)
     prereg.verify()
     return receipt_path
@@ -889,6 +957,14 @@ def _build_registry(
         ),
     )
     benchmark = prereg.payload["benchmark"]
+    train_timeout = _controller_timeout_seconds(
+        stage=prereg.stage,
+        task_count=benchmark["train_count"],
+    )
+    selection_timeout = _controller_timeout_seconds(
+        stage=prereg.stage,
+        task_count=benchmark["selection_count"],
+    )
     return ControllerRegistry(
         registrations=(
             ControllerRegistration(
@@ -899,7 +975,7 @@ def _build_registry(
                 launch_artifact_ids=("executable", "runner"),
                 response_public_key=authorities["train_public_key"],
                 artifacts=train_artifacts,
-                timeout_seconds=300.0,
+                timeout_seconds=train_timeout,
                 max_output_chars=10_000_000,
             ),
             ControllerRegistration(
@@ -910,11 +986,19 @@ def _build_registry(
                 launch_artifact_ids=("executable", "runner"),
                 response_public_key=authorities["selection_public_key"],
                 artifacts=selection_artifacts,
-                timeout_seconds=300.0,
+                timeout_seconds=selection_timeout,
                 max_output_chars=1_000_000,
             ),
         )
     )
+
+
+def _controller_timeout_seconds(*, stage: str, task_count: int) -> float:
+    if stage == "zero_call_dry_run":
+        return 300.0
+    prompt_waves = math.ceil(task_count / COCO_ACP_WORKERS)
+    startup_seconds = COCO_ACP_WORKERS * ACP_STARTUP_TIMEOUT_SECONDS
+    return startup_seconds + prompt_waves * 120.0 + 30.0
 
 
 def _controller_artifact(artifact_id: str, preregistered) -> ControllerArtifact:

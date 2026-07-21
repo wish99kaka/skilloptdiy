@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import tempfile
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -31,12 +34,233 @@ from textskill_optimizer.paper.searchqa_experiment import (
     _require_within_budgets,
 )
 from textskill_optimizer.paper.searchqa_controller_runtime import (
+    CocoACPWorkerPool,
     TargetBudgetGuard,
-    _find_response_text,
+    TargetResult,
+    _CocoACPWorker,
+    _append_failed_usage,
 )
 
 
 class PaperSearchQAContractTests(unittest.TestCase):
+    def test_coco_acp_pool_starts_five_workers_serially_then_runs_in_parallel(self) -> None:
+        starts: list[int] = []
+        active_by_worker: dict[int, int] = {}
+        active_total = 0
+        max_active_total = 0
+        lock = threading.Lock()
+        first_wave = threading.Barrier(5)
+
+        class FakeWorker:
+            def __init__(self, worker_id: int) -> None:
+                self.worker_id = worker_id
+
+            def prompt(self, prompt: str, *, timeout: float) -> TargetResult:
+                nonlocal active_total, max_active_total
+                with lock:
+                    active_by_worker[self.worker_id] = (
+                        active_by_worker.get(self.worker_id, 0) + 1
+                    )
+                    self.assert_worker_is_serial()
+                    active_total += 1
+                    max_active_total = max(max_active_total, active_total)
+                if prompt.startswith("first-"):
+                    first_wave.wait(timeout=1.0)
+                time.sleep(0.01)
+                with lock:
+                    active_by_worker[self.worker_id] -= 1
+                    active_total -= 1
+                return TargetResult(prompt, 1, 1, True, 0.01)
+
+            def assert_worker_is_serial(self) -> None:
+                if active_by_worker[self.worker_id] != 1:
+                    raise AssertionError("one ACP worker received concurrent prompts")
+
+            def close(self) -> None:
+                return None
+
+        def start_worker(*, worker_id: int, **_kwargs):
+            starts.append(worker_id)
+            self.assertEqual(active_total, 0)
+            return FakeWorker(worker_id)
+
+        pool = CocoACPWorkerPool.start(
+            binary=Path("/tmp/fake-coco"),
+            cwd=Path("/tmp"),
+            task_count=10,
+            startup_timeout=lambda: 1.0,
+            worker_factory=start_worker,
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                first = list(
+                    executor.map(
+                        lambda index: pool.prompt(f"first-{index}", timeout=1.0),
+                        range(5),
+                    )
+                )
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                second = list(
+                    executor.map(
+                        lambda index: pool.prompt(f"second-{index}", timeout=1.0),
+                        range(5),
+                    )
+                )
+        finally:
+            pool.close()
+
+        self.assertEqual(starts, [0, 1, 2, 3, 4])
+        self.assertEqual(max_active_total, 5)
+        self.assertEqual([item.response for item in first], [f"first-{i}" for i in range(5)])
+        self.assertEqual(
+            [item.response for item in second], [f"second-{i}" for i in range(5)]
+        )
+
+    def test_coco_acp_pool_closes_started_workers_when_serial_startup_fails(self) -> None:
+        closed: list[int] = []
+
+        class FakeWorker:
+            def __init__(self, worker_id: int) -> None:
+                self.worker_id = worker_id
+
+            def close(self) -> None:
+                closed.append(self.worker_id)
+
+        def start_worker(*, worker_id: int, **_kwargs):
+            if worker_id == 2:
+                raise RuntimeError("startup failed")
+            return FakeWorker(worker_id)
+
+        with self.assertRaisesRegex(RuntimeError, "startup failed"):
+            CocoACPWorkerPool.start(
+                binary=Path("/tmp/fake-coco"),
+                cwd=Path("/tmp"),
+                task_count=5,
+                startup_timeout=lambda: 1.0,
+                worker_factory=start_worker,
+            )
+
+        self.assertEqual(closed, [1, 0])
+
+    def test_coco_acp_worker_uses_a_fresh_session_and_actual_usage_per_prompt(self) -> None:
+        fake_server = """#!/usr/bin/env python3
+import json
+import sys
+
+sessions = 0
+used = set()
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request["method"]
+    if method == "initialize":
+        result = {"protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}
+    elif method == "session/new":
+        sessions += 1
+        result = {"sessionId": f"session-{sessions}"}
+    elif method == "session/prompt":
+        session_id = request["params"]["sessionId"]
+        if session_id in used:
+            response = {"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32602, "message": "session reused"}}
+            print(json.dumps(response), flush=True)
+            continue
+        used.add(session_id)
+        update = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": f"reply-{session_id}"},
+                },
+            },
+        }
+        print(json.dumps(update), flush=True)
+        result = {
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": sessions * 10, "outputTokens": sessions, "totalTokens": sessions * 11},
+        }
+    else:
+        response = {"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "unknown"}}
+        print(json.dumps(response), flush=True)
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "fake-coco"
+            binary.write_text(fake_server, encoding="utf-8")
+            os.chmod(binary, 0o700)
+            worker = _CocoACPWorker.start(
+                worker_id=0,
+                binary=binary,
+                cwd=Path(tmp),
+                timeout=2.0,
+            )
+            try:
+                first = worker.prompt("first", timeout=2.0)
+                second = worker.prompt("second", timeout=2.0)
+            finally:
+                worker.close()
+
+        self.assertEqual(first.response, "reply-session-1")
+        self.assertEqual(first.prompt_tokens, 10)
+        self.assertEqual(first.completion_tokens, 1)
+        self.assertEqual(second.response, "reply-session-2")
+        self.assertEqual(second.prompt_tokens, 20)
+        self.assertEqual(second.completion_tokens, 2)
+
+    def test_coco_acp_pool_fails_closed_without_restarting_a_worker(self) -> None:
+        starts: list[int] = []
+
+        class FailingWorker:
+            def prompt(self, prompt: str, *, timeout: float) -> TargetResult:
+                raise RuntimeError("prompt failed")
+
+            def close(self) -> None:
+                return None
+
+        def start_worker(*, worker_id: int, **_kwargs):
+            starts.append(worker_id)
+            return FailingWorker()
+
+        pool = CocoACPWorkerPool.start(
+            binary=Path("/tmp/fake-coco"),
+            cwd=Path("/tmp"),
+            task_count=1,
+            startup_timeout=lambda: 1.0,
+            worker_factory=start_worker,
+        )
+        try:
+            with self.assertRaisesRegex(RuntimeError, "prompt failed"):
+                pool.prompt("first", timeout=1.0)
+            with self.assertRaisesRegex(RuntimeError, "stopped after a worker failure"):
+                pool.prompt("second", timeout=1.0)
+        finally:
+            pool.close()
+
+        self.assertEqual(starts, [0])
+
+    def test_failed_target_usage_retains_bounded_root_cause(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "usage.jsonl"
+            args = SimpleNamespace(
+                usage_ledger=ledger,
+                target_model="target-v1",
+                target_reasoning="not_configured",
+            )
+            item = SearchQAItem("item-1", "Question?", "Context", ("Answer",))
+
+            _append_failed_usage(
+                args,
+                item,
+                prompt="prompt",
+                error=RuntimeError("ACP_ROOT_CAUSE" + "x" * 2000),
+            )
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+
+        self.assertTrue(record["error_message"].startswith("ACP_ROOT_CAUSE"))
+        self.assertLessEqual(len(record["error_message"]), 1000)
+
     def test_pins_the_materialization_source_revision(self) -> None:
         self.assertEqual(
             SEARCHQA_DATASET_REVISION,
@@ -57,47 +281,6 @@ class PaperSearchQAContractTests(unittest.TestCase):
 
         self.assertEqual(score.exact_match, 1.0)
         self.assertEqual(score.predicted_answer, "Paris")
-
-    def test_extracts_coco_json_message_content_instead_of_session_id(self) -> None:
-        payload = {
-            "session_id": "2df14b86-82ed-441e-9267-341bd8acf236",
-            "agent_states": [],
-            "message": {
-                "role": "assistant",
-                "content": "<answer>Breakfast at Tiffany's</answer>",
-            },
-            "tools": [],
-            "error": "",
-        }
-
-        self.assertEqual(
-            _find_response_text(payload),
-            "<answer>Breakfast at Tiffany's</answer>",
-        )
-
-    def test_rejects_coco_json_without_an_assistant_message(self) -> None:
-        payload = {
-            "session_id": "2df14b86-82ed-441e-9267-341bd8acf236",
-            "agent_states": [],
-            "message": {"role": "user", "content": "not a target response"},
-            "tools": [],
-            "error": "",
-        }
-
-        with self.assertRaisesRegex(RuntimeError, "assistant message"):
-            _find_response_text(payload)
-
-    def test_rejects_coco_json_with_empty_assistant_content(self) -> None:
-        payload = {
-            "session_id": "2df14b86-82ed-441e-9267-341bd8acf236",
-            "agent_states": [],
-            "message": {"role": "assistant", "content": ""},
-            "tools": [],
-            "error": "",
-        }
-
-        with self.assertRaisesRegex(RuntimeError, "assistant message content"):
-            _find_response_text(payload)
 
     def test_item_schema_is_exact_and_answers_are_non_empty(self) -> None:
         with self.assertRaisesRegex(SearchQAContractViolation, "exactly"):

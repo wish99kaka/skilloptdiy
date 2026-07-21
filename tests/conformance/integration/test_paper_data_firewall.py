@@ -24,6 +24,7 @@ from textskill_optimizer.paper import (
     TrainController,
     TrainEvidenceBatch,
 )
+from textskill_optimizer.paper.controller_process import invoke_optimization_controller
 
 
 SELECTION_SENTINEL = "SELECTION_SECRET_SENTINEL"
@@ -183,6 +184,44 @@ payload = {
 
 
 class PaperDataFirewallTests(unittest.TestCase):
+    def test_controller_failure_preserves_bounded_stderr_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "failing.py"
+            public_key, _ = _write_signed_controller(
+                path,
+                controller_id="selection-owner",
+                payload_source='payload = {"score": 0.0}',
+            )
+            path.write_text(
+                "import sys\nprint('ACP_ROOT_CAUSE', file=sys.stderr)\nraise SystemExit(7)\n",
+                encoding="utf-8",
+            )
+            runner_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            registry = ControllerRegistry(
+                registrations=(
+                    _registration(
+                        path,
+                        controller_id="selection-owner",
+                        role=ControllerRole.SELECTION,
+                        split_id="selection-v1",
+                        public_key=public_key,
+                        runner_sha256=runner_sha,
+                    ),
+                )
+            )
+
+            with self.assertRaisesRegex(
+                DataFirewallViolation,
+                "exit code 7: ACP_ROOT_CAUSE",
+            ):
+                invoke_optimization_controller(
+                    registry=registry,
+                    controller_id="selection-owner",
+                    role=ControllerRole.SELECTION,
+                    request={"operation": "score_selection"},
+                )
+
     def test_selection_process_returns_only_scalar_and_never_reaches_optimizer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             registry, train, selection = _controllers(Path(tmp))

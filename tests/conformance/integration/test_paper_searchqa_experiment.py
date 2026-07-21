@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from textskill_optimizer.paper.searchqa_experiment import (
+    _controller_timeout_seconds,
     prepare_zero_call_searchqa_experiment,
     prepare_searchqa_mechanism_smoke,
     run_searchqa_experiment,
@@ -83,6 +84,61 @@ def _authorized_zero_cost_receipt(commit: str) -> dict:
 
 
 class PaperSearchQAExperimentTests(unittest.TestCase):
+    def test_paid_controller_timeout_covers_five_worker_prompt_waves(self) -> None:
+        self.assertEqual(
+            _controller_timeout_seconds(stage="mechanism_smoke", task_count=40),
+            1140.0,
+        )
+        self.assertEqual(
+            _controller_timeout_seconds(stage="mechanism_smoke", task_count=20),
+            660.0,
+        )
+        self.assertEqual(
+            _controller_timeout_seconds(stage="zero_call_dry_run", task_count=40),
+            300.0,
+        )
+
+    def test_execution_error_writes_a_single_use_diagnostic_stop_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            train_path = root / "open-train.json"
+            selection_path = root / "open-selection.json"
+            train_path.write_text(json.dumps(_items("train", 40)), encoding="utf-8")
+            selection_path.write_text(
+                json.dumps(_items("selection", 20)), encoding="utf-8"
+            )
+            materialization_receipt, materialization = _fake_materialization(root)
+            with patch(
+                "textskill_optimizer.paper.searchqa_experiment."
+                "verify_searchqa_materialization_receipt",
+                return_value=materialization,
+            ):
+                preregistration_path = prepare_zero_call_searchqa_experiment(
+                    run_dir=root / "run",
+                    train_path=train_path,
+                    selection_path=selection_path,
+                    materialization_receipt_path=materialization_receipt,
+                )
+
+            with patch(
+                "textskill_optimizer.paper.searchqa_experiment.PaperEpochLoop.initialize",
+                side_effect=RuntimeError("ACP_ROOT_CAUSE"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "ACP_ROOT_CAUSE"):
+                    run_searchqa_experiment(preregistration_path)
+            receipt_path = root / "run" / "receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            with self.assertRaisesRegex(ValueError, "single-use"):
+                run_searchqa_experiment(preregistration_path)
+
+        self.assertEqual(receipt["status"], "stopped")
+        self.assertEqual(receipt["stop_reason"], "execution_error")
+        self.assertEqual(receipt["error_type"], "RuntimeError")
+        self.assertEqual(receipt["error_message"], "ACP_ROOT_CAUSE")
+        self.assertEqual(receipt["completed_epochs"], 0)
+        self.assertEqual(receipt["completed_steps"], 0)
+        self.assertEqual(receipt["usage"]["logical_target_calls"], 0)
+
     def test_zero_call_run_executes_the_full_epoch_graph_without_test_access(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
