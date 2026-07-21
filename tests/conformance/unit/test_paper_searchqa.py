@@ -32,13 +32,16 @@ from textskill_optimizer.paper.searchqa_experiment import (
     OpenAICompatiblePaperOptimizerBackend,
     PaidBudgetGuard,
     _require_within_budgets,
+    _usage_summary,
 )
 from textskill_optimizer.paper.searchqa_controller_runtime import (
+    CocoTargetInvocationError,
     CocoACPWorkerPool,
     TargetBudgetGuard,
     TargetResult,
     _CocoACPWorker,
     _append_failed_usage,
+    _evaluate_target,
 )
 
 
@@ -209,6 +212,56 @@ for line in sys.stdin:
         self.assertEqual(second.prompt_tokens, 20)
         self.assertEqual(second.completion_tokens, 2)
 
+    def test_coco_acp_worker_accepts_missing_usage_for_audit_only_tokens(self) -> None:
+        fake_server = """#!/usr/bin/env python3
+import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request["method"]
+    if method == "initialize":
+        result = {"protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}
+    elif method == "session/new":
+        result = {"sessionId": "session-1"}
+    elif method == "session/prompt":
+        update = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "session-1",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "reply-without-usage"},
+                },
+            },
+        }
+        print(json.dumps(update), flush=True)
+        result = {"stopReason": "end_turn"}
+    else:
+        raise AssertionError(method)
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "fake-coco"
+            binary.write_text(fake_server, encoding="utf-8")
+            os.chmod(binary, 0o700)
+            worker = _CocoACPWorker.start(
+                worker_id=0,
+                binary=binary,
+                cwd=Path(tmp),
+                timeout=2.0,
+            )
+            try:
+                result = worker.prompt("prompt", timeout=2.0)
+            finally:
+                worker.close()
+
+        self.assertEqual(result.response, "reply-without-usage")
+        self.assertEqual(result.prompt_tokens, 0)
+        self.assertEqual(result.completion_tokens, 0)
+        self.assertFalse(result.tokens_are_actual)
+
     def test_coco_acp_pool_fails_closed_without_restarting_a_worker(self) -> None:
         starts: list[int] = []
 
@@ -240,6 +293,123 @@ for line in sys.stdin:
 
         self.assertEqual(starts, [0])
 
+    def test_coco_worker_marks_a_sent_prompt_failure_as_external(self) -> None:
+        fake_server = """#!/usr/bin/env python3
+import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request["method"]
+    if method == "initialize":
+        result = {"protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}
+        response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
+    elif method == "session/new":
+        response = {"jsonrpc": "2.0", "id": request["id"], "result": {"sessionId": "session-1"}}
+    elif method == "session/prompt":
+        response = {"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32000, "message": "prompt failed"}}
+    else:
+        raise AssertionError(method)
+    print(json.dumps(response), flush=True)
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "fake-coco"
+            binary.write_text(fake_server, encoding="utf-8")
+            os.chmod(binary, 0o700)
+            worker = _CocoACPWorker.start(
+                worker_id=0,
+                binary=binary,
+                cwd=Path(tmp),
+                timeout=2.0,
+            )
+            try:
+                with self.assertRaises(CocoTargetInvocationError) as raised:
+                    worker.prompt("prompt", timeout=2.0)
+            finally:
+                worker.close()
+
+        self.assertTrue(raised.exception.external_call)
+        self.assertGreaterEqual(raised.exception.duration_seconds, 0.0)
+
+    def test_target_pool_short_circuit_is_not_recorded_as_external(self) -> None:
+        class ShortCircuitedPool:
+            def prompt(self, prompt: str, *, timeout: float) -> TargetResult:
+                raise RuntimeError("pool stopped before dispatch")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "coco"
+            binary.touch()
+            rollout_prompt = root / "rollout.md"
+            rollout_prompt.write_text("{skill_section}", encoding="utf-8")
+            ledger = root / "usage.jsonl"
+            args = SimpleNamespace(
+                backend="coco",
+                coco_binary=binary,
+                rollout_prompt=rollout_prompt,
+                target_model="target-v1",
+                target_reasoning="not_configured",
+                usage_ledger=ledger,
+            )
+            item = SearchQAItem("item-1", "Question?", "Context", ("Answer",))
+
+            with self.assertRaisesRegex(RuntimeError, "before dispatch"):
+                _evaluate_target(
+                    args,
+                    "",
+                    item,
+                    guard=None,
+                    coco_pool=ShortCircuitedPool(),
+                )
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+
+        self.assertFalse(record["external_call"])
+
+    def test_target_without_usage_records_a_successful_audit_only_call(self) -> None:
+        class AuditOnlyPool:
+            def prompt(self, prompt: str, *, timeout: float) -> TargetResult:
+                return TargetResult(
+                    response="<answer>Answer</answer>",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    tokens_are_actual=False,
+                    duration_seconds=0.01,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "coco"
+            binary.touch()
+            rollout_prompt = root / "rollout.md"
+            rollout_prompt.write_text("{skill_section}", encoding="utf-8")
+            ledger = root / "usage.jsonl"
+            args = SimpleNamespace(
+                backend="coco",
+                coco_binary=binary,
+                rollout_prompt=rollout_prompt,
+                target_model="target-v1",
+                target_reasoning="not_configured",
+                usage_ledger=ledger,
+            )
+            item = SearchQAItem("item-1", "Question?", "Context", ("Answer",))
+
+            result, score = _evaluate_target(
+                args,
+                "",
+                item,
+                guard=None,
+                coco_pool=AuditOnlyPool(),
+            )
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+
+        self.assertEqual(score, 1.0)
+        self.assertFalse(result.tokens_are_actual)
+        self.assertTrue(record["external_call"])
+        self.assertFalse(record["tokens_are_actual"])
+        self.assertEqual(record["total_tokens"], 0)
+        self.assertGreater(record["estimated_prompt_tokens"], 0)
+        self.assertGreater(record["estimated_completion_tokens"], 0)
+
     def test_failed_target_usage_retains_bounded_root_cause(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Path(tmp) / "usage.jsonl"
@@ -255,11 +425,47 @@ for line in sys.stdin:
                 item,
                 prompt="prompt",
                 error=RuntimeError("ACP_ROOT_CAUSE" + "x" * 2000),
+                external_call=False,
             )
             record = json.loads(ledger.read_text(encoding="utf-8"))
 
         self.assertTrue(record["error_message"].startswith("ACP_ROOT_CAUSE"))
         self.assertLessEqual(len(record["error_message"]), 1000)
+        self.assertFalse(record["external_call"])
+
+    def test_failed_target_usage_marks_only_dispatched_prompts_external(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "usage.jsonl"
+            args = SimpleNamespace(
+                usage_ledger=ledger,
+                target_model="target-v1",
+                target_reasoning="not_configured",
+            )
+            item = SearchQAItem("item-1", "Question?", "Context", ("Answer",))
+
+            _append_failed_usage(
+                args,
+                item,
+                prompt="prompt",
+                error=RuntimeError("dispatched failure"),
+                external_call=True,
+            )
+            _append_failed_usage(
+                args,
+                item,
+                prompt="prompt",
+                error=RuntimeError("pool short circuit"),
+                external_call=False,
+            )
+            records = [
+                json.loads(line)
+                for line in ledger.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(
+            [record["external_call"] for record in records],
+            [True, False],
+        )
 
     def test_pins_the_materialization_source_revision(self) -> None:
         self.assertEqual(
@@ -569,7 +775,7 @@ for line in sys.stdin:
 
         self.assertEqual(verified.receipt_path.name, "materialization-receipt.json")
 
-    def test_external_optimizer_requires_json_and_actual_usage(self) -> None:
+    def test_external_optimizer_records_actual_usage_when_available(self) -> None:
         provider_response = {
             "choices": [{"message": {"content": '{"reasoning":"ok","edits":[]}'}}],
             "usage": {
@@ -630,6 +836,117 @@ for line in sys.stdin:
         self.assertEqual(captured["body"]["response_format"], {"type": "json_object"})
         self.assertEqual(captured["body"]["reasoning_effort"], "medium")
         self.assertEqual(response.usage["total_tokens"], 14)
+        self.assertEqual(backend.external_calls, 1)
+        self.assertEqual(backend.actual_tokens, 14)
+        self.assertGreater(backend.estimated_tokens, 0)
+
+    def test_external_optimizer_accepts_missing_usage_for_audit_only_tokens(self) -> None:
+        provider_response = {
+            "choices": [{"message": {"content": '{"reasoning":"ok","edits":[]}'}}],
+        }
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps(provider_response).encode()
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "EXTERNAL_LLM_BASE_URL": "https://example.invalid/v1",
+                "EXTERNAL_LLM_API_KEY": "secret",
+                "EXTERNAL_LLM_MODEL": "optimizer-v1",
+            },
+        ), patch("urllib.request.urlopen", return_value=FakeResponse()):
+            ledger = Path(tmp) / "optimizer-usage.jsonl"
+            backend = OpenAICompatiblePaperOptimizerBackend(
+                model_id="optimizer-v1",
+                reasoning_effort="medium",
+                usage_ledger=ledger,
+            )
+            response = backend.complete(
+                OptimizerRequest(
+                    call_id="call-1",
+                    stage=OptimizerStage.MERGE_FAILURE,
+                    system_prompt="system",
+                    prompt="{}",
+                    response_schema={"type": "object"},
+                )
+            )
+            usage_record = json.loads(ledger.read_text(encoding="utf-8"))
+
+        self.assertEqual(response.usage["total_tokens"], 0)
+        self.assertEqual(backend.external_calls, 1)
+        self.assertEqual(backend.actual_tokens, 0)
+        self.assertGreater(backend.estimated_tokens, 0)
+        self.assertFalse(usage_record["tokens_are_actual"])
+        self.assertGreater(usage_record["estimated_total_tokens"], 0)
+
+    def test_failed_optimizer_response_still_accounts_reported_usage(self) -> None:
+        provider_response = {
+            "choices": [{"message": {"content": "not-json"}}],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14,
+            },
+        }
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps(provider_response).encode()
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "EXTERNAL_LLM_BASE_URL": "https://example.invalid/v1",
+                "EXTERNAL_LLM_API_KEY": "secret",
+                "EXTERNAL_LLM_MODEL": "optimizer-v1",
+            },
+        ), patch("urllib.request.urlopen", return_value=FakeResponse()):
+            ledger = Path(tmp) / "optimizer-usage.jsonl"
+            backend = OpenAICompatiblePaperOptimizerBackend(
+                model_id="optimizer-v1",
+                reasoning_effort="medium",
+                usage_ledger=ledger,
+            )
+            request = OptimizerRequest(
+                call_id="call-1",
+                stage=OptimizerStage.MERGE_FAILURE,
+                system_prompt="system",
+                prompt="{}",
+                response_schema={"type": "object"},
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "lacks JSON content"):
+                backend.complete(request)
+            usage_record = json.loads(ledger.read_text(encoding="utf-8"))
+            summary = _usage_summary(
+                Path(tmp) / "train-usage.jsonl",
+                Path(tmp) / "selection-usage.jsonl",
+                optimizer_backend=backend,
+            )
+
+        self.assertEqual(backend.external_calls, 1)
+        self.assertEqual(backend.actual_tokens, 14)
+        self.assertTrue(usage_record["failed"])
+        self.assertTrue(usage_record["tokens_are_actual"])
+        self.assertEqual(usage_record["total_tokens"], 14)
+        self.assertEqual(summary["logical_optimizer_calls"], 1)
+        self.assertEqual(summary["external_optimizer_calls"], 1)
+        self.assertEqual(summary["optimizer_tokens"], 14)
+        self.assertGreater(summary["estimated_optimizer_tokens"], 0)
 
     def test_model_tokens_are_audit_only_but_call_caps_still_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

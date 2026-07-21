@@ -204,7 +204,7 @@ class ScriptedSearchQAOptimizerBackend:
 
 
 class OpenAICompatiblePaperOptimizerBackend:
-    """Strict Chat Completions adapter with actual provider usage required."""
+    """Strict JSON adapter with token usage recorded on an audit-only basis."""
 
     def __init__(
         self,
@@ -218,6 +218,9 @@ class OpenAICompatiblePaperOptimizerBackend:
         self.reasoning_effort = reasoning_effort
         self.requests: list[OptimizerRequest] = []
         self.responses: list[OptimizerResponse] = []
+        self._external_calls = 0
+        self._actual_tokens = 0
+        self._estimated_tokens = 0
         self._budget_guard = budget_guard
         self._usage_ledger = usage_ledger
         self._usage_lock = threading.Lock()
@@ -266,32 +269,58 @@ class OpenAICompatiblePaperOptimizerBackend:
         timeout = 300.0
         if self._budget_guard is not None:
             timeout = min(timeout, self._budget_guard.remaining_seconds())
+        estimated_input_tokens = _estimate_tokens(
+            request.system_prompt + request.prompt
+        )
         try:
+            with self._usage_lock:
+                self._external_calls += 1
             with urllib.request.urlopen(http_request, timeout=timeout) as response:
                 provider = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            self._append_usage(request.call_id, total_tokens=0, failed=True)
+            self._append_usage(
+                request.call_id,
+                total_tokens=0,
+                estimated_total_tokens=estimated_input_tokens,
+                tokens_are_actual=False,
+                failed=True,
+            )
             detail = error.read().decode("utf-8", errors="replace")[-1000:]
             raise RuntimeError(
                 f"external optimizer HTTP {error.code}: {detail}"
             ) from error
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as error:
-            self._append_usage(request.call_id, total_tokens=0, failed=True)
+            self._append_usage(
+                request.call_id,
+                total_tokens=0,
+                estimated_total_tokens=estimated_input_tokens,
+                tokens_are_actual=False,
+                failed=True,
+            )
             raise RuntimeError(f"external optimizer call failed: {error}") from error
         try:
             content = provider["choices"][0]["message"]["content"]
             payload = json.loads(content)
-            usage = provider["usage"]
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
-            self._append_usage(request.call_id, total_tokens=0, failed=True)
+            failed_usage, tokens_are_actual = _optional_provider_usage(
+                provider.get("usage")
+            )
+            self._append_usage(
+                request.call_id,
+                total_tokens=failed_usage["total_tokens"],
+                estimated_total_tokens=estimated_input_tokens,
+                tokens_are_actual=tokens_are_actual,
+                failed=True,
+            )
             raise RuntimeError(
-                "external optimizer response lacks JSON content or actual usage"
+                "external optimizer response lacks JSON content"
             ) from error
-        normalized_usage = {
-            "prompt_tokens": _provider_usage(usage, "prompt_tokens"),
-            "completion_tokens": _provider_usage(usage, "completion_tokens"),
-            "total_tokens": _provider_usage(usage, "total_tokens"),
-        }
+        normalized_usage, tokens_are_actual = _optional_provider_usage(
+            provider.get("usage")
+        )
+        estimated_total_tokens = estimated_input_tokens + _estimate_tokens(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        )
         response = OptimizerResponse(
             call_id=request.call_id,
             payload=payload,
@@ -302,6 +331,8 @@ class OpenAICompatiblePaperOptimizerBackend:
         self._append_usage(
             request.call_id,
             total_tokens=normalized_usage["total_tokens"],
+            estimated_total_tokens=estimated_total_tokens,
+            tokens_are_actual=tokens_are_actual,
             failed=False,
         )
         if self._budget_guard is not None:
@@ -310,13 +341,36 @@ class OpenAICompatiblePaperOptimizerBackend:
             )
         return response
 
-    def _append_usage(
-        self, call_id: str, *, total_tokens: int, failed: bool
-    ) -> None:
-        if self._usage_ledger is None:
-            return
-        self._usage_ledger.parent.mkdir(parents=True, exist_ok=True)
+    @property
+    def external_calls(self) -> int:
         with self._usage_lock:
+            return self._external_calls
+
+    @property
+    def actual_tokens(self) -> int:
+        with self._usage_lock:
+            return self._actual_tokens
+
+    @property
+    def estimated_tokens(self) -> int:
+        with self._usage_lock:
+            return self._estimated_tokens
+
+    def _append_usage(
+        self,
+        call_id: str,
+        *,
+        total_tokens: int,
+        estimated_total_tokens: int,
+        tokens_are_actual: bool,
+        failed: bool,
+    ) -> None:
+        with self._usage_lock:
+            self._actual_tokens += total_tokens
+            self._estimated_tokens += estimated_total_tokens
+            if self._usage_ledger is None:
+                return
+            self._usage_ledger.parent.mkdir(parents=True, exist_ok=True)
             with self._usage_ledger.open("a", encoding="utf-8") as stream:
                 stream.write(
                     json.dumps(
@@ -326,6 +380,8 @@ class OpenAICompatiblePaperOptimizerBackend:
                             "failed": failed,
                             "model_id": self.model_id,
                             "total_tokens": total_tokens,
+                            "estimated_total_tokens": estimated_total_tokens,
+                            "tokens_are_actual": tokens_are_actual,
                         },
                         sort_keys=True,
                         separators=(",", ":"),
@@ -1058,9 +1114,25 @@ def _usage_summary(
                 for line in path.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             )
-    external_optimizer = isinstance(
-        optimizer_backend, OpenAICompatiblePaperOptimizerBackend
-    )
+    if isinstance(optimizer_backend, OpenAICompatiblePaperOptimizerBackend):
+        external_optimizer_calls = optimizer_backend.external_calls
+        optimizer_tokens = optimizer_backend.actual_tokens
+        estimated_optimizer_tokens = optimizer_backend.estimated_tokens
+    else:
+        external_optimizer_calls = 0
+        optimizer_tokens = sum(
+            int(response.usage.get("total_tokens", 0))
+            for response in optimizer_backend.responses
+        )
+        estimated_optimizer_tokens = sum(
+            _estimate_tokens(request.system_prompt + request.prompt)
+            + _estimate_tokens(
+                json.dumps(response.payload, ensure_ascii=False, sort_keys=True)
+            )
+            for request, response in zip(
+                optimizer_backend.requests, optimizer_backend.responses
+            )
+        )
     return {
         "logical_target_calls": len(records),
         "external_target_calls": sum(bool(item["external_call"]) for item in records),
@@ -1071,22 +1143,9 @@ def _usage_summary(
             for item in records
         ),
         "logical_optimizer_calls": len(optimizer_backend.requests),
-        "external_optimizer_calls": (
-            len(optimizer_backend.responses) if external_optimizer else 0
-        ),
-        "optimizer_tokens": sum(
-            int(response.usage.get("total_tokens", 0))
-            for response in optimizer_backend.responses
-        ),
-        "estimated_optimizer_tokens": sum(
-            _estimate_tokens(request.system_prompt + request.prompt)
-            + _estimate_tokens(
-                json.dumps(response.payload, ensure_ascii=False, sort_keys=True)
-            )
-            for request, response in zip(
-                optimizer_backend.requests, optimizer_backend.responses
-            )
-        ),
+        "external_optimizer_calls": external_optimizer_calls,
+        "optimizer_tokens": optimizer_tokens,
+        "estimated_optimizer_tokens": estimated_optimizer_tokens,
     }
 
 
@@ -1130,6 +1189,22 @@ def _provider_usage(payload: object, name: str) -> int:
     if value < 0:
         raise RuntimeError(f"external optimizer usage {name} cannot be negative")
     return value
+
+
+def _optional_provider_usage(payload: object) -> tuple[dict[str, int], bool]:
+    try:
+        usage = {
+            "prompt_tokens": _provider_usage(payload, "prompt_tokens"),
+            "completion_tokens": _provider_usage(payload, "completion_tokens"),
+            "total_tokens": _provider_usage(payload, "total_tokens"),
+        }
+    except RuntimeError:
+        return {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }, False
+    return usage, True
 
 
 def _estimate_tokens(value: str) -> int:

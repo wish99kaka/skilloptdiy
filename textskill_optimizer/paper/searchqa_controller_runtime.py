@@ -42,6 +42,21 @@ class TargetResult:
     duration_seconds: float
 
 
+class CocoTargetInvocationError(RuntimeError):
+    """A Coco target failure annotated with whether the prompt was dispatched."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        external_call: bool,
+        duration_seconds: float,
+    ) -> None:
+        super().__init__(message)
+        self.external_call = external_call
+        self.duration_seconds = duration_seconds
+
+
 class _ACPConnection:
     """One serial JSON-RPC connection over ACP's line-delimited stdio transport."""
 
@@ -68,6 +83,7 @@ class _ACPConnection:
         params: dict[str, Any],
         *,
         timeout: float,
+        on_sent: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if timeout <= 0:
             raise TimeoutError(f"Coco ACP {method} timed out")
@@ -81,6 +97,8 @@ class _ACPConnection:
                 "params": params,
             }
         )
+        if on_sent is not None:
+            on_sent()
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -268,40 +286,55 @@ class _CocoACPWorker:
         with self._lock:
             started = time.monotonic()
             deadline = started + timeout
-            session_id = self._primed_session_id
-            if session_id:
-                self._primed_session_id = ""
-            else:
-                session_id = self._new_session(
-                    self._connection,
-                    self._cwd,
-                    timeout=_remaining(deadline, "Coco ACP session creation"),
+            external_call = False
+
+            def mark_external_call() -> None:
+                nonlocal external_call
+                external_call = True
+
+            try:
+                session_id = self._primed_session_id
+                if session_id:
+                    self._primed_session_id = ""
+                else:
+                    session_id = self._new_session(
+                        self._connection,
+                        self._cwd,
+                        timeout=_remaining(deadline, "Coco ACP session creation"),
+                    )
+                result = self._connection.request(
+                    "session/prompt",
+                    {
+                        "sessionId": session_id,
+                        "prompt": [{"type": "text", "text": prompt}],
+                    },
+                    timeout=_remaining(deadline, "Coco ACP prompt"),
+                    on_sent=mark_external_call,
                 )
-            result = self._connection.request(
-                "session/prompt",
-                {
-                    "sessionId": session_id,
-                    "prompt": [{"type": "text", "text": prompt}],
-                },
-                timeout=_remaining(deadline, "Coco ACP prompt"),
-            )
-            response = self._connection.take_message(session_id)
-            if not response:
-                raise RuntimeError("Coco ACP prompt did not emit an assistant message")
-            usage = result.get("usage")
-            if type(usage) is not dict:
-                raise RuntimeError(
-                    "Coco ACP prompt did not expose token usage; paid M7 execution is blocked"
+                response = self._connection.take_message(session_id)
+                if not response:
+                    raise RuntimeError("Coco ACP prompt did not emit an assistant message")
+                usage = result.get("usage")
+                prompt_tokens = _optional_usage_integer(usage, "inputTokens")
+                completion_tokens = _optional_usage_integer(usage, "outputTokens")
+                tokens_are_actual = (
+                    prompt_tokens is not None and completion_tokens is not None
                 )
-            prompt_tokens = _usage_integer(usage, ("inputTokens",))
-            completion_tokens = _usage_integer(usage, ("outputTokens",))
-            return TargetResult(
-                response=response,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                tokens_are_actual=True,
-                duration_seconds=time.monotonic() - started,
-            )
+                return TargetResult(
+                    response=response,
+                    prompt_tokens=prompt_tokens if tokens_are_actual else 0,
+                    completion_tokens=completion_tokens if tokens_are_actual else 0,
+                    tokens_are_actual=tokens_are_actual,
+                    duration_seconds=time.monotonic() - started,
+                )
+            except Exception as error:
+                if isinstance(error, CocoTargetInvocationError):
+                    raise
+                raise CocoTargetInvocationError(
+                    str(error),
+                    external_call=external_call,
+                    duration_seconds=time.monotonic() - started,
+                ) from error
 
     def close(self) -> None:
         self._connection.close()
@@ -637,7 +670,17 @@ def _evaluate_target(
                 coco_pool=coco_pool,
             )
         except Exception as error:
-            _append_failed_usage(args, item, prompt=prompt, error=error)
+            _append_failed_usage(
+                args,
+                item,
+                prompt=prompt,
+                error=error,
+                external_call=(
+                    error.external_call
+                    if isinstance(error, CocoTargetInvocationError)
+                    else False
+                ),
+            )
             raise
     score = score_searchqa_response(result.response, item.answers).exact_match
     _append_usage(args, item, result, prompt=prompt)
@@ -719,12 +762,11 @@ def _target_worker_count(args: argparse.Namespace, task_count: int) -> int:
     return min(limit, task_count)
 
 
-def _usage_integer(usage: dict[str, Any], names: tuple[str, ...]) -> int:
-    for name in names:
-        value = usage.get(name)
-        if type(value) is int and value >= 0:
-            return value
-    raise RuntimeError(f"Coco token usage is missing {names[0]}")
+def _optional_usage_integer(usage: Any, name: str) -> int | None:
+    if type(usage) is not dict:
+        return None
+    value = usage.get(name)
+    return value if type(value) is int and value >= 0 else None
 
 
 def _planned_batch(
@@ -805,6 +847,7 @@ def _append_failed_usage(
     *,
     prompt: str,
     error: Exception,
+    external_call: bool,
 ) -> None:
     args.usage_ledger.parent.mkdir(parents=True, exist_ok=True)
     error_message = str(error)
@@ -817,14 +860,18 @@ def _append_failed_usage(
         "model_id": args.target_model,
         "reasoning": args.target_reasoning,
         "task_id": item.item_id,
-        "external_call": True,
+        "external_call": external_call,
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,
         "estimated_prompt_tokens": _estimate_tokens(prompt),
         "estimated_completion_tokens": 0,
         "tokens_are_actual": False,
-        "duration_seconds": 0.0,
+        "duration_seconds": (
+            error.duration_seconds
+            if isinstance(error, CocoTargetInvocationError)
+            else 0.0
+        ),
         "failed": True,
         "error_type": type(error).__name__,
         "error_message": error_message,
