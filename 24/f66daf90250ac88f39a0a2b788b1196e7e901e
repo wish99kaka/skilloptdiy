@@ -1,0 +1,30 @@
+tests/conformance/unit/test_paper_searchqa.py
+  s_51962c641b3cb0::t_6e1df41fd2a483 1077,1088-1091,1093-1096,1104-1234
+textskill_optimizer/paper/errors.py
+  s_51962c641b3cb0::t_a4dbb358239c45 3-4,20-34
+textskill_optimizer/paper/searchqa_experiment.py
+  s_51962c641b3cb0::t_daa47d0c48a3a7 26,40,135-138,234,238,287,292,294-302,305-313,315,317-318,320-332,334-347,350-352,355-435,474-517,526,545-549,558-657,1027,1126-1142,1147,1149-1155,1168-1169,1204,1546-1547,1623-1635,1727-1800,2001
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "24f66daf90250ac88f39a0a2b788b1196e7e901e",
+  "prompts": {},
+  "humans": {
+    "h_13a4e2249850fc": {
+      "author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "sessions": {
+    "s_51962c641b3cb0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6a73-0735-7d83-9d00-dc04d561f69a",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
