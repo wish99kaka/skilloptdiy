@@ -23,7 +23,7 @@ from typing import Any, Callable, Mapping
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from .artifacts import PaperArtifactKind
+from .artifacts import PaperArtifactKind, optimizer_request_payload
 from .backend import OptimizerRequest, OptimizerResponse, OptimizerStage
 from .checkpoint import CheckpointAuthenticator
 from .config import load_paper_profile
@@ -37,7 +37,7 @@ from .data import SelectionController, TrainController
 from .epoch_loop import PaperEpochLoop
 from .epoch_plan import PaperEpochPlan
 from .epoch_plan import PaperMechanismSpec
-from .errors import SkillContractViolation
+from .errors import OptimizerProviderError, SkillContractViolation
 from .optimization import PaperOptimizationController
 from .preregistration import load_paper_preregistration
 from .provenance import canonical_json_sha256
@@ -131,6 +131,10 @@ class ScriptedSearchQAOptimizerBackend:
     def __init__(self) -> None:
         self.requests = []
         self.responses = []
+
+    @property
+    def failure_records(self) -> tuple[Mapping[str, Any], ...]:
+        return ()
 
     def complete(self, request: OptimizerRequest) -> OptimizerResponse:
         self.requests.append(request)
@@ -227,9 +231,11 @@ class OpenAICompatiblePaperOptimizerBackend:
         self._external_calls = 0
         self._actual_tokens = 0
         self._estimated_tokens = 0
+        self._failures: list[dict[str, Any]] = []
         self._budget_guard = budget_guard
         self._usage_ledger = usage_ledger
         self._usage_lock = threading.Lock()
+        self._failure_lock = threading.Lock()
         self._base_url = os.environ.get("EXTERNAL_LLM_BASE_URL", "").strip()
         self._api_key = os.environ.get("EXTERNAL_LLM_API_KEY", "").strip()
         configured_model = os.environ.get("EXTERNAL_LLM_MODEL", "").strip()
@@ -278,52 +284,155 @@ class OpenAICompatiblePaperOptimizerBackend:
         estimated_input_tokens = _estimate_tokens(
             request.system_prompt + request.prompt
         )
+        raw_body = b""
         try:
             with self._usage_lock:
                 self._external_calls += 1
             with urllib.request.urlopen(http_request, timeout=timeout) as response:
-                provider = json.loads(response.read().decode("utf-8"))
+                raw_body = response.read()
         except urllib.error.HTTPError as error:
-            self._append_usage(
-                request.call_id,
-                total_tokens=0,
-                estimated_total_tokens=estimated_input_tokens,
+            raw_body = error.read()
+            diagnostic = _provider_response_diagnostic(raw_body=raw_body)
+            diagnostic["http_status"] = int(error.code)
+            failure = self._record_failure(
+                request,
+                code="optimizer_http_error",
+                message=f"external optimizer HTTP {error.code}",
+                diagnostic=diagnostic,
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                 tokens_are_actual=False,
-                failed=True,
-            )
-            detail = error.read().decode("utf-8", errors="replace")[-1000:]
-            raise RuntimeError(
-                f"external optimizer HTTP {error.code}: {detail}"
-            ) from error
-        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as error:
-            self._append_usage(
-                request.call_id,
-                total_tokens=0,
                 estimated_total_tokens=estimated_input_tokens,
-                tokens_are_actual=False,
-                failed=True,
             )
-            raise RuntimeError(f"external optimizer call failed: {error}") from error
+            raise failure from error
+        except (urllib.error.URLError, TimeoutError) as error:
+            failure = self._record_failure(
+                request,
+                code="optimizer_transport_error",
+                message=f"external optimizer transport failed: {type(error).__name__}",
+                diagnostic=_provider_response_diagnostic(raw_body=raw_body),
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                tokens_are_actual=False,
+                estimated_total_tokens=estimated_input_tokens,
+            )
+            raise failure from error
+
         try:
-            content = provider["choices"][0]["message"]["content"]
-            payload = json.loads(content)
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
-            failed_usage, tokens_are_actual = _optional_provider_usage(
-                provider.get("usage")
-            )
-            self._append_usage(
-                request.call_id,
-                total_tokens=failed_usage["total_tokens"],
+            provider = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            diagnostic = _provider_response_diagnostic(raw_body=raw_body)
+            if isinstance(error, json.JSONDecodeError):
+                diagnostic["body_json_error"] = _json_error_diagnostic(error)
+            failure = self._record_failure(
+                request,
+                code="optimizer_provider_body_invalid_json",
+                message="external optimizer response body is not valid JSON",
+                diagnostic=diagnostic,
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                tokens_are_actual=False,
                 estimated_total_tokens=estimated_input_tokens,
-                tokens_are_actual=tokens_are_actual,
-                failed=True,
             )
-            raise RuntimeError(
-                "external optimizer response lacks JSON content"
-            ) from error
-        normalized_usage, tokens_are_actual = _optional_provider_usage(
+            raise failure from error
+
+        diagnostic = _provider_response_diagnostic(
+            raw_body=raw_body,
+            provider=provider,
+        )
+        if type(provider) is not dict:
+            failure = self._record_failure(
+                request,
+                code="optimizer_provider_envelope_not_object",
+                message="external optimizer response envelope is not an object",
+                diagnostic=diagnostic,
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                tokens_are_actual=False,
+                estimated_total_tokens=estimated_input_tokens,
+            )
+            raise failure
+
+        failed_usage, tokens_are_actual = _optional_provider_usage(
             provider.get("usage")
         )
+
+        def fail(code: str, message: str) -> None:
+            raise self._record_failure(
+                request,
+                code=code,
+                message=message,
+                diagnostic=diagnostic,
+                usage=failed_usage,
+                tokens_are_actual=tokens_are_actual,
+                estimated_total_tokens=estimated_input_tokens,
+            )
+
+        if "choices" not in provider:
+            fail(
+                "optimizer_provider_choices_missing",
+                "external optimizer response is missing choices",
+            )
+        choices = provider["choices"]
+        if type(choices) is not list:
+            fail(
+                "optimizer_provider_choices_not_array",
+                "external optimizer response choices is not an array",
+            )
+        if not choices:
+            fail(
+                "optimizer_provider_choices_empty",
+                "external optimizer response choices is empty",
+            )
+        choice = choices[0]
+        if type(choice) is not dict:
+            fail(
+                "optimizer_provider_choice_not_object",
+                "external optimizer response first choice is not an object",
+            )
+        if "message" not in choice:
+            fail(
+                "optimizer_provider_message_missing",
+                "external optimizer response choice is missing message",
+            )
+        message = choice["message"]
+        if type(message) is not dict:
+            fail(
+                "optimizer_provider_message_not_object",
+                "external optimizer response message is not an object",
+            )
+        if "content" not in message:
+            fail(
+                "optimizer_provider_content_missing",
+                "external optimizer response message is missing content",
+            )
+        content = message["content"]
+        if type(content) is not str:
+            fail(
+                "optimizer_provider_content_not_string",
+                "external optimizer response message content is not a string",
+            )
+        if not content.strip():
+            fail(
+                "optimizer_provider_content_empty",
+                "external optimizer response message content is empty",
+            )
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as error:
+            diagnostic["content_json_error"] = _json_error_diagnostic(error)
+            failure = self._record_failure(
+                request,
+                code="optimizer_provider_content_invalid_json",
+                message="external optimizer response message content is not valid JSON",
+                diagnostic=diagnostic,
+                usage=failed_usage,
+                tokens_are_actual=tokens_are_actual,
+                estimated_total_tokens=estimated_input_tokens,
+            )
+            raise failure from error
+        if type(payload) is not dict:
+            fail(
+                "optimizer_provider_content_not_object",
+                "external optimizer response message content JSON is not an object",
+            )
+        normalized_usage = failed_usage
         estimated_total_tokens = estimated_input_tokens + _estimate_tokens(
             json.dumps(payload, ensure_ascii=False, sort_keys=True)
         )
@@ -362,6 +471,50 @@ class OpenAICompatiblePaperOptimizerBackend:
         with self._usage_lock:
             return self._estimated_tokens
 
+    @property
+    def failure_records(self) -> tuple[Mapping[str, Any], ...]:
+        with self._failure_lock:
+            return tuple(dict(record) for record in self._failures)
+
+    def _record_failure(
+        self,
+        request: OptimizerRequest,
+        *,
+        code: str,
+        message: str,
+        diagnostic: Mapping[str, Any],
+        usage: Mapping[str, int],
+        tokens_are_actual: bool,
+        estimated_total_tokens: int,
+    ) -> OptimizerProviderError:
+        error = OptimizerProviderError(code, message)
+        record = {
+            "schema_version": "paper-optimizer-failure-v1",
+            "failure_code": code,
+            "error_type": type(error).__name__,
+            "error_message": message,
+            "model_id": self.model_id,
+            "request": optimizer_request_payload(request),
+            "provider_response": dict(diagnostic),
+            "usage": {
+                "prompt_tokens": int(usage["prompt_tokens"]),
+                "completion_tokens": int(usage["completion_tokens"]),
+                "total_tokens": int(usage["total_tokens"]),
+                "tokens_are_actual": tokens_are_actual,
+            },
+        }
+        with self._failure_lock:
+            self._failures.append(record)
+        self._append_usage(
+            request.call_id,
+            total_tokens=int(usage["total_tokens"]),
+            estimated_total_tokens=estimated_total_tokens,
+            tokens_are_actual=tokens_are_actual,
+            failed=True,
+            failure_code=code,
+        )
+        return error
+
     def _append_usage(
         self,
         call_id: str,
@@ -370,6 +523,7 @@ class OpenAICompatiblePaperOptimizerBackend:
         estimated_total_tokens: int,
         tokens_are_actual: bool,
         failed: bool,
+        failure_code: str | None = None,
     ) -> None:
         with self._usage_lock:
             self._actual_tokens += total_tokens
@@ -388,12 +542,117 @@ class OpenAICompatiblePaperOptimizerBackend:
                             "total_tokens": total_tokens,
                             "estimated_total_tokens": estimated_total_tokens,
                             "tokens_are_actual": tokens_are_actual,
+                            **(
+                                {"failure_code": failure_code}
+                                if failure_code is not None
+                                else {}
+                            ),
                         },
                         sort_keys=True,
                         separators=(",", ":"),
                     )
                     + "\n"
                 )
+
+
+def _json_type_name(value: object) -> str:
+    if value is None:
+        return "null"
+    if type(value) is bool:
+        return "boolean"
+    if type(value) is int or type(value) is float:
+        return "number"
+    if type(value) is str:
+        return "string"
+    if type(value) is list:
+        return "array"
+    if type(value) is dict:
+        return "object"
+    return type(value).__name__
+
+
+def _json_error_diagnostic(error: json.JSONDecodeError) -> dict[str, Any]:
+    return {
+        "type": type(error).__name__,
+        "line": error.lineno,
+        "column": error.colno,
+        "position": error.pos,
+    }
+
+
+def _add_text_field_diagnostic(
+    diagnostic: dict[str, Any],
+    *,
+    prefix: str,
+    value: object,
+) -> None:
+    diagnostic[f"{prefix}_type"] = _json_type_name(value)
+    if type(value) is str:
+        encoded = value.encode("utf-8")
+        diagnostic[f"{prefix}_size_chars"] = len(value)
+        diagnostic[f"{prefix}_size_bytes"] = len(encoded)
+        diagnostic[f"{prefix}_sha256"] = hashlib.sha256(encoded).hexdigest()
+
+
+def _provider_response_diagnostic(
+    *,
+    raw_body: bytes,
+    provider: object | None = None,
+) -> dict[str, Any]:
+    """Return structural provider evidence without storing generated content."""
+
+    diagnostic: dict[str, Any] = {
+        "schema_version": "optimizer-provider-response-diagnostic-v1",
+        "body_size_bytes": len(raw_body),
+        "body_sha256": hashlib.sha256(raw_body).hexdigest(),
+    }
+    if provider is None:
+        return diagnostic
+    diagnostic["provider_json_type"] = _json_type_name(provider)
+    if type(provider) is not dict:
+        return diagnostic
+    diagnostic["provider_keys"] = sorted(provider)
+    choices = provider.get("choices")
+    diagnostic["choices_type"] = _json_type_name(choices)
+    if type(choices) is not list:
+        return diagnostic
+    diagnostic["choices_count"] = len(choices)
+    if not choices:
+        return diagnostic
+    choice = choices[0]
+    diagnostic["first_choice_type"] = _json_type_name(choice)
+    if type(choice) is not dict:
+        return diagnostic
+    diagnostic["first_choice_keys"] = sorted(choice)
+    finish_reason = choice.get("finish_reason")
+    if finish_reason is None or type(finish_reason) is str:
+        diagnostic["finish_reason"] = finish_reason
+    else:
+        diagnostic["finish_reason_type"] = _json_type_name(finish_reason)
+    message = choice.get("message")
+    diagnostic["message_type"] = _json_type_name(message)
+    if type(message) is not dict:
+        return diagnostic
+    diagnostic["message_keys"] = sorted(message)
+    if "content" in message:
+        _add_text_field_diagnostic(
+            diagnostic,
+            prefix="content",
+            value=message["content"],
+        )
+    if "reasoning_content" in message:
+        _add_text_field_diagnostic(
+            diagnostic,
+            prefix="reasoning_content",
+            value=message["reasoning_content"],
+        )
+    if "refusal" in message:
+        _add_text_field_diagnostic(
+            diagnostic,
+            prefix="refusal",
+            value=message["refusal"],
+        )
+    return diagnostic
 
 
 def prepare_zero_call_searchqa_experiment(
@@ -765,6 +1024,7 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
                 run_root=run_root,
                 loop=loop,
                 authorities=authorities,
+                optimizer_backend=backend,
             )
             _write_json(
                 receipt_path,
@@ -863,11 +1123,36 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
                     + error_message[-983:]
                 )
             state = loop.state if initial_state is not None else None
+            error_code = getattr(error, "code", "unclassified_execution_error")
+            if (
+                type(error_code) is not str
+                or re.fullmatch(r"[a-z][a-z0-9_]+", error_code) is None
+            ):
+                error_code = "unclassified_execution_error"
+            error_call_id = None
+            if isinstance(error, OptimizerProviderError):
+                failure_records = backend.failure_records
+                if (
+                    not failure_records
+                    or failure_records[-1]["failure_code"] != error_code
+                ):
+                    raise RuntimeError(
+                        "optimizer provider failure lacks matching evidence"
+                    ) from error
+                error_call_id = failure_records[-1]["request"]["call_id"]
             evidence_artifacts = _persist_run_evidence(
                 run_root=run_root,
                 loop=loop,
                 authorities=authorities,
+                optimizer_backend=backend,
             )
+            if (
+                isinstance(error, OptimizerProviderError)
+                and "optimizer_failures" not in evidence_artifacts
+            ):
+                raise RuntimeError(
+                    "optimizer provider failure artifact was not sealed"
+                ) from error
             _write_json(
                 receipt_path,
                 {
@@ -880,6 +1165,8 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
                         else "execution_error"
                     ),
                     "error_type": type(error).__name__,
+                    "error_code": error_code,
+                    "error_call_id": error_call_id,
                     "error_message": error_message,
                     "preregistration_sha256": _sha256(prereg.source_path),
                     "profile_sha256": canonical_json_sha256(profile.to_dict()),
@@ -914,6 +1201,7 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
         run_root=run_root,
         loop=loop,
         authorities=authorities,
+        optimizer_backend=backend,
     )
     receipt = {
         "schema_version": "paper-searchqa-development-receipt-v2",
@@ -1255,6 +1543,8 @@ def _persist_run_evidence(
     run_root: Path,
     loop: PaperEpochLoop,
     authorities: Mapping[str, Any],
+    optimizer_backend: ScriptedSearchQAOptimizerBackend
+    | OpenAICompatiblePaperOptimizerBackend,
 ) -> dict[str, dict[str, Any]]:
     """Seal complete runtime evidence before a terminal receipt is written."""
 
@@ -1329,6 +1619,19 @@ def _persist_run_evidence(
         },
     )
     evidence_paths["optimizer_exchanges"] = exchanges_path
+
+    failure_records = optimizer_backend.failure_records
+    if failure_records:
+        _verify_optimizer_failure_records(failure_records)
+        failures_path = run_root / "optimizer-failures.json"
+        _write_json(
+            failures_path,
+            {
+                "schema_version": "paper-run-optimizer-failures-v1",
+                "failures": [dict(record) for record in failure_records],
+            },
+        )
+        evidence_paths["optimizer_failures"] = failures_path
 
     try:
         state = loop.state
@@ -1419,6 +1722,80 @@ def _persist_run_evidence(
         }
         for name, path in sorted(evidence_paths.items())
     }
+
+
+def _verify_optimizer_failure_records(
+    records: tuple[Mapping[str, Any], ...],
+) -> None:
+    expected_record_keys = {
+        "schema_version",
+        "failure_code",
+        "error_type",
+        "error_message",
+        "model_id",
+        "request",
+        "provider_response",
+        "usage",
+    }
+    expected_request_keys = {
+        "call_id",
+        "stage",
+        "prompt",
+        "response_schema",
+        "system_prompt",
+        "metadata",
+    }
+    expected_usage_keys = {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "tokens_are_actual",
+    }
+    for record in records:
+        if type(record) is not dict or set(record) != expected_record_keys:
+            raise RuntimeError("optimizer failure evidence fields are invalid")
+        request = record["request"]
+        diagnostic = record["provider_response"]
+        usage = record["usage"]
+        if (
+            record["schema_version"] != "paper-optimizer-failure-v1"
+            or re.fullmatch(
+                r"optimizer_[a-z0-9_]+", str(record["failure_code"])
+            )
+            is None
+            or record["error_type"] != "OptimizerProviderError"
+            or type(record["error_message"]) is not str
+            or not record["error_message"]
+            or type(record["model_id"]) is not str
+            or not record["model_id"]
+            or type(request) is not dict
+            or set(request) != expected_request_keys
+            or type(request["call_id"]) is not str
+            or not request["call_id"]
+            or type(request["stage"]) is not str
+            or not request["stage"]
+            or type(diagnostic) is not dict
+            or diagnostic.get("schema_version")
+            != "optimizer-provider-response-diagnostic-v1"
+            or type(diagnostic.get("body_size_bytes")) is not int
+            or diagnostic["body_size_bytes"] < 0
+            or re.fullmatch(
+                r"[0-9a-f]{64}", str(diagnostic.get("body_sha256"))
+            )
+            is None
+            or any(
+                key in diagnostic
+                for key in ("content", "raw_body", "api_key", "authorization")
+            )
+            or type(usage) is not dict
+            or set(usage) != expected_usage_keys
+            or any(
+                type(usage[name]) is not int or usage[name] < 0
+                for name in ("prompt_tokens", "completion_tokens", "total_tokens")
+            )
+            or type(usage["tokens_are_actual"]) is not bool
+        ):
+            raise RuntimeError("optimizer failure evidence values are invalid")
 
 
 def _verify_selection_audit(path: Path) -> None:
@@ -1621,6 +1998,7 @@ def _require_fresh_run(run_root: Path, authorities: Mapping[str, Any]) -> None:
         run_root / "events.json",
         run_root / "candidate-skills.json",
         run_root / "optimizer-exchanges.json",
+        run_root / "optimizer-failures.json",
         run_root / "final-state.json",
         run_root / "final-skill.md",
         run_root / "best-skill.md",

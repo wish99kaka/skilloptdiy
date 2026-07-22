@@ -9,7 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from textskill_optimizer.paper.backend import OptimizerStage
 from textskill_optimizer.paper.searchqa_experiment import (
+    OpenAICompatiblePaperOptimizerBackend,
+    ScriptedSearchQAOptimizerBackend,
     _controller_timeout_seconds,
     prepare_zero_call_searchqa_experiment,
     prepare_searchqa_mechanism_smoke,
@@ -135,9 +138,134 @@ class PaperSearchQAExperimentTests(unittest.TestCase):
         self.assertEqual(receipt["stop_reason"], "execution_error")
         self.assertEqual(receipt["error_type"], "RuntimeError")
         self.assertEqual(receipt["error_message"], "ACP_ROOT_CAUSE")
+        self.assertEqual(receipt["error_code"], "unclassified_execution_error")
+        self.assertIsNone(receipt["error_call_id"])
         self.assertEqual(receipt["completed_epochs"], 0)
         self.assertEqual(receipt["completed_steps"], 0)
         self.assertEqual(receipt["usage"]["logical_target_calls"], 0)
+
+    def test_optimizer_contract_failure_is_sealed_in_stop_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            train_path = root / "open-train.json"
+            selection_path = root / "open-selection.json"
+            train_path.write_text(json.dumps(_items("train", 40)), encoding="utf-8")
+            selection_path.write_text(
+                json.dumps(_items("selection", 20)), encoding="utf-8"
+            )
+            materialization_receipt, materialization = _fake_materialization(root)
+            with patch(
+                "textskill_optimizer.paper.searchqa_experiment."
+                "verify_searchqa_materialization_receipt",
+                return_value=materialization,
+            ):
+                preregistration_path = prepare_zero_call_searchqa_experiment(
+                    run_dir=root / "run",
+                    train_path=train_path,
+                    selection_path=selection_path,
+                    materialization_receipt_path=materialization_receipt,
+                    mechanism_smoke_scope=True,
+                )
+
+            provider_response = {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": '{"slow_update_content":"cut off"'},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 25_000,
+                    "completion_tokens": 5_462,
+                    "total_tokens": 30_462,
+                },
+            }
+
+            class FakeResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def read(self):
+                    return json.dumps(provider_response).encode()
+
+            scripted = ScriptedSearchQAOptimizerBackend()
+            with patch.dict(
+                "os.environ",
+                {
+                    "EXTERNAL_LLM_BASE_URL": "https://example.invalid/v1",
+                    "EXTERNAL_LLM_API_KEY": "api-key-must-not-be-sealed-7f82",
+                    "EXTERNAL_LLM_MODEL": "optimizer-v1",
+                },
+            ), patch("urllib.request.urlopen", return_value=FakeResponse()):
+                backend = OpenAICompatiblePaperOptimizerBackend(
+                    model_id="optimizer-v1",
+                    reasoning_effort="medium",
+                    usage_ledger=root / "run" / "optimizer-usage.jsonl",
+                )
+                external_complete = backend.complete
+
+                def hybrid_complete(request):
+                    if request.stage is OptimizerStage.PROPOSE_SLOW_UPDATE:
+                        return external_complete(request)
+                    response = scripted.complete(request)
+                    backend.requests.append(request)
+                    backend.responses.append(response)
+                    return response
+
+                backend.complete = hybrid_complete
+                with patch(
+                    "textskill_optimizer.paper.searchqa_experiment."
+                    "ScriptedSearchQAOptimizerBackend",
+                    return_value=backend,
+                ):
+                    with self.assertRaises(RuntimeError) as raised:
+                        run_searchqa_experiment(preregistration_path)
+
+            receipt_path = root / "run" / "receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                getattr(raised.exception, "code", None),
+                "optimizer_provider_content_invalid_json",
+            )
+            self.assertEqual(
+                receipt["error_code"],
+                "optimizer_provider_content_invalid_json",
+            )
+            self.assertEqual(receipt["error_call_id"], "e2-slow-update")
+            self.assertEqual(receipt["usage"]["external_optimizer_calls"], 1)
+            self.assertIn("optimizer_failures", receipt["evidence_artifacts"])
+            failure_artifact = receipt["evidence_artifacts"]["optimizer_failures"]
+            failure_path = receipt_path.parent / failure_artifact["path"]
+            self.assertEqual(
+                hashlib.sha256(failure_path.read_bytes()).hexdigest(),
+                failure_artifact["sha256"],
+            )
+            failure_text = failure_path.read_text(encoding="utf-8")
+            self.assertNotIn("api-key-must-not-be-sealed-7f82", failure_text)
+            self.assertNotIn("cut off", failure_text)
+            failures = json.loads(failure_text)
+            self.assertEqual(
+                failures["schema_version"],
+                "paper-run-optimizer-failures-v1",
+            )
+            self.assertEqual(len(failures["failures"]), 1)
+            failure = failures["failures"][0]
+            self.assertEqual(failure["request"]["call_id"], "e2-slow-update")
+            self.assertEqual(failure["request"]["stage"], "propose_slow_update")
+            self.assertEqual(
+                failure["failure_code"],
+                "optimizer_provider_content_invalid_json",
+            )
+            self.assertEqual(
+                failure["provider_response"]["finish_reason"],
+                "length",
+            )
+            self.assertNotIn("content", failure["provider_response"])
+            with self.assertRaisesRegex(ValueError, "single-use"):
+                run_searchqa_experiment(preregistration_path)
 
     def test_zero_call_run_executes_the_full_epoch_graph_without_test_access(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

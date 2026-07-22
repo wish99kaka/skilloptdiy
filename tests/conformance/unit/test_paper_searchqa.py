@@ -1074,7 +1074,7 @@ for line in sys.stdin:
                 response_schema={"type": "object"},
             )
 
-            with self.assertRaisesRegex(RuntimeError, "lacks JSON content"):
+            with self.assertRaisesRegex(RuntimeError, "not valid JSON") as raised:
                 backend.complete(request)
             usage_record = json.loads(ledger.read_text(encoding="utf-8"))
             summary = _usage_summary(
@@ -1085,13 +1085,152 @@ for line in sys.stdin:
 
         self.assertEqual(backend.external_calls, 1)
         self.assertEqual(backend.actual_tokens, 14)
+        self.assertEqual(
+            raised.exception.code,
+            "optimizer_provider_content_invalid_json",
+        )
         self.assertTrue(usage_record["failed"])
+        self.assertEqual(
+            usage_record["failure_code"],
+            "optimizer_provider_content_invalid_json",
+        )
         self.assertTrue(usage_record["tokens_are_actual"])
         self.assertEqual(usage_record["total_tokens"], 14)
         self.assertEqual(summary["logical_optimizer_calls"], 1)
         self.assertEqual(summary["external_optimizer_calls"], 1)
         self.assertEqual(summary["optimizer_tokens"], 14)
         self.assertGreater(summary["estimated_optimizer_tokens"], 0)
+
+    def test_failed_optimizer_responses_have_distinct_diagnostic_codes(self) -> None:
+        cases = (
+            (
+                "missing_choices",
+                {"usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}},
+                "optimizer_provider_choices_missing",
+            ),
+            (
+                "missing_content",
+                {
+                    "choices": [{"message": {}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+                },
+                "optimizer_provider_content_missing",
+            ),
+            (
+                "null_content",
+                {
+                    "choices": [{"message": {"content": None}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+                },
+                "optimizer_provider_content_not_string",
+            ),
+            (
+                "invalid_json",
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"content": '{"reasoning":"truncated"'},
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+                },
+                "optimizer_provider_content_invalid_json",
+            ),
+            (
+                "empty_content",
+                {
+                    "choices": [{"message": {"content": "  "}}],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 4,
+                        "total_tokens": 14,
+                    },
+                },
+                "optimizer_provider_content_empty",
+            ),
+            (
+                "non_object_json",
+                {
+                    "choices": [{"message": {"content": "[]"}}],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 4,
+                        "total_tokens": 14,
+                    },
+                },
+                "optimizer_provider_content_not_object",
+            ),
+        )
+
+        for name, provider_response, expected_code in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                class FakeResponse:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        return False
+
+                    def read(self):
+                        return json.dumps(provider_response).encode()
+
+                ledger = Path(tmp) / "optimizer-usage.jsonl"
+                with patch.dict(
+                    "os.environ",
+                    {
+                        "EXTERNAL_LLM_BASE_URL": "https://example.invalid/v1",
+                        "EXTERNAL_LLM_API_KEY": "secret",
+                        "EXTERNAL_LLM_MODEL": "optimizer-v1",
+                    },
+                ), patch("urllib.request.urlopen", return_value=FakeResponse()):
+                    backend = OpenAICompatiblePaperOptimizerBackend(
+                        model_id="optimizer-v1",
+                        reasoning_effort="medium",
+                        usage_ledger=ledger,
+                    )
+                    request = OptimizerRequest(
+                        call_id="e2-slow-update",
+                        stage=OptimizerStage.PROPOSE_SLOW_UPDATE,
+                        system_prompt="system",
+                        prompt="{}",
+                        response_schema={"type": "object"},
+                    )
+
+                    with self.assertRaises(RuntimeError) as raised:
+                        backend.complete(request)
+
+                self.assertEqual(
+                    getattr(raised.exception, "code", None),
+                    expected_code,
+                )
+                usage_record = json.loads(ledger.read_text(encoding="utf-8"))
+                self.assertEqual(usage_record["failure_code"], expected_code)
+                self.assertTrue(usage_record["failed"])
+                self.assertEqual(usage_record["total_tokens"], 14)
+                self.assertEqual(len(backend.failure_records), 1)
+                failure = backend.failure_records[0]
+                self.assertEqual(failure["failure_code"], expected_code)
+                self.assertEqual(failure["request"]["call_id"], "e2-slow-update")
+                self.assertEqual(failure["request"]["stage"], "propose_slow_update")
+                self.assertEqual(
+                    failure["provider_response"]["body_size_bytes"],
+                    len(json.dumps(provider_response).encode()),
+                )
+                self.assertRegex(
+                    failure["provider_response"]["body_sha256"],
+                    r"^[0-9a-f]{64}$",
+                )
+                self.assertNotIn("content", failure["provider_response"])
+                if name == "invalid_json":
+                    self.assertEqual(
+                        failure["provider_response"]["finish_reason"],
+                        "length",
+                    )
+                    self.assertEqual(
+                        failure["provider_response"]["content_json_error"]["type"],
+                        "JSONDecodeError",
+                    )
 
     def test_model_tokens_are_audit_only_but_call_caps_still_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
