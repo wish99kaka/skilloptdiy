@@ -1,0 +1,43 @@
+README.md
+  s_51962c641b3cb0::t_b000e883bb3bf5 94-115,144-152
+scripts/materialize_paper_searchqa.py
+  s_51962c641b3cb0::t_0816a7c59a841a 35-39,46,63,74,113-127
+tests/conformance/integration/_paper_runtime.py
+  s_51962c641b3cb0::t_eda6ea302b3475 33,175
+tests/conformance/integration/test_paper_fast_loop.py
+  s_51962c641b3cb0::t_b95a93def0d1f0 17,182-224
+textskill_optimizer/paper/__init__.py
+  s_51962c641b3cb0::t_d9734a66cdd7fc 77
+textskill_optimizer/paper/epoch_loop.py
+  s_51962c641b3cb0::t_abf41b5a24a990 256,262-266,268-270,274,386-394,721-725,727-731,733-740,921-924,932-936
+textskill_optimizer/paper/errors.py
+  s_51962c641b3cb0::t_fb3289f466a846 6-17
+textskill_optimizer/paper/fast_loop.py
+  s_51962c641b3cb0::t_f7f20347fb781c 23,107,136,148-149,217,389-390,392-407,413-414,417-418,453-466,493-497,499-507,520,882-897,1545-1599,1615-1623
+textskill_optimizer/paper/optimization.py
+  s_51962c641b3cb0::t_83204e3dc5c965 6,33-34,47-62,71,88,98-106
+textskill_optimizer/paper/preregistration.py
+  s_51962c641b3cb0::t_ad318ba1d8742a 128-131,420,440,487-533
+textskill_optimizer/paper/searchqa.py
+  s_51962c641b3cb0::t_bcd1ca9fce266e 44-47,66,79,86-93,183,185,191,221-249,289,301,356,361-370,530,534-542,578,580-592
+textskill_optimizer/paper/searchqa_controller_runtime.py
+  s_51962c641b3cb0::t_f22cb680b6050c 9,22,526-528,606,614,621-757
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "33148964b38a6a89a2a578ba0da5221eb219a8a3",
+  "prompts": {},
+  "sessions": {
+    "s_51962c641b3cb0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6a73-0735-7d83-9d00-dc04d561f69a",
+        "model": "unknown"
+      },
+      "human_author": "shiranqing <shiranqing@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
