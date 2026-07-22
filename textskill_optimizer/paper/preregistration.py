@@ -125,6 +125,10 @@ class PaperDevelopmentPreregistration:
                     "mechanism dry-run receipt must be readable JSON"
                 ) from error
             _validate_dry_run_receipt(dry_receipt, budgets=self.payload["budgets"])
+            _verify_dry_run_evidence_artifacts(
+                dry_receipt["evidence_artifacts"],
+                root=dry_receipt_artifact.path.parent,
+            )
             dry_prereg = load_paper_preregistration(dry_prereg_artifact.path)
             if (
                 dry_prereg.stage != "zero_call_dry_run"
@@ -413,6 +417,7 @@ def _validate_dry_run_receipt(
             "test_payload_status",
             "claim_class",
             "evidence_level",
+            "evidence_artifacts",
         },
         context="mechanism dry-run receipt",
     )
@@ -432,7 +437,7 @@ def _validate_dry_run_receipt(
     )
     usage = payload["usage"]
     if (
-        payload["schema_version"] != "paper-searchqa-development-receipt-v1"
+        payload["schema_version"] != "paper-searchqa-development-receipt-v2"
         or payload["status"] != "completed"
         or payload["stage"] != "zero_call_dry_run"
         or payload["completed_epochs"] != 2
@@ -477,6 +482,53 @@ def _validate_dry_run_receipt(
         raise PaperPreregistrationViolation(
             "paid budgets are not mechanically derived from the dry-run receipt"
         )
+
+
+def _verify_dry_run_evidence_artifacts(payload: object, *, root: Path) -> None:
+    required = {
+        "artifact_lineage",
+        "candidate_skills",
+        "checkpoint",
+        "events",
+        "final_skill",
+        "final_state",
+        "optimizer_exchanges",
+        "selection_audit",
+    }
+    if type(payload) is not dict or not required.issubset(payload):
+        raise PaperPreregistrationViolation(
+            "mechanism dry-run is missing required evidence artifacts"
+        )
+    resolved_root = root.resolve()
+    for artifact in payload.values():
+        _require_exact_keys(
+            artifact,
+            {"path", "sha256", "size_bytes"},
+            context="mechanism dry-run evidence artifact",
+        )
+        raw_path = artifact["path"]
+        if type(raw_path) is not str or not raw_path or Path(raw_path).is_absolute():
+            raise PaperPreregistrationViolation(
+                "mechanism dry-run evidence path must be relative"
+            )
+        path = (resolved_root / raw_path).resolve()
+        if path.parent != resolved_root or not path.is_file():
+            raise PaperPreregistrationViolation(
+                "mechanism dry-run evidence artifact is missing or escaped"
+            )
+        _require_sha256(
+            artifact["sha256"],
+            context="mechanism dry-run evidence artifact",
+        )
+        if (
+            hashlib.sha256(path.read_bytes()).hexdigest() != artifact["sha256"]
+            or type(artifact["size_bytes"]) is not int
+            or artifact["size_bytes"] < 0
+            or path.stat().st_size != artifact["size_bytes"]
+        ):
+            raise PaperPreregistrationViolation(
+                "mechanism dry-run evidence artifact drifted"
+            )
 
 
 def _validate_models(payload: object) -> None:

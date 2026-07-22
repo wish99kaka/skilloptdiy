@@ -32,12 +32,18 @@ def main() -> int:
     parser.add_argument("--train-size", type=int, default=40)
     parser.add_argument("--selection-size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--selection-seed",
+        type=int,
+        help="independent selection RNG seed; use 55 for the repeat smoke split",
+    )
     args = parser.parse_args()
     try:
         policy = get_searchqa_development_materialization_policy(
             train_limit=args.train_size,
             selection_limit=args.selection_size,
             seed=args.seed,
+            selection_seed=args.selection_seed,
         )
         train_manifest = args.official_manifest_dir / "train" / "items.json"
         selection_manifest = args.official_manifest_dir / "val" / "items.json"
@@ -54,6 +60,7 @@ def main() -> int:
             train_limit=args.train_size,
             selection_limit=args.selection_size,
             seed=args.seed,
+            selection_seed=policy.selection_seed,
         )
         requested_ids = (*sampled_ids["train"], *sampled_ids["selection"])
         source = fetch_searchqa_rows_by_id(requested_ids)
@@ -64,6 +71,7 @@ def main() -> int:
             train_limit=args.train_size,
             selection_limit=args.selection_size,
             seed=args.seed,
+            selection_seed=policy.selection_seed,
         )
         output_dir = args.output_dir.resolve()
         output_dir.mkdir(parents=True, exist_ok=False)
@@ -102,11 +110,21 @@ def main() -> int:
                     "sha256": _sha256(copied_selection_manifest),
                 },
             },
-            "sample": {
-                "seed": args.seed,
-                "train_limit": args.train_size,
-                "selection_limit": args.selection_size,
-            },
+            "sample": (
+                {
+                    "train_seed": policy.seed,
+                    "selection_seed": policy.selection_seed,
+                    "train_limit": args.train_size,
+                    "selection_limit": args.selection_size,
+                }
+                if policy.schema_version
+                == "searchqa-development-materialization-v4"
+                else {
+                    "seed": args.seed,
+                    "train_limit": args.train_size,
+                    "selection_limit": args.selection_size,
+                }
+            ),
             "counts": {
                 "train": len(selected["train"]),
                 "selection": len(selected["selection"]),

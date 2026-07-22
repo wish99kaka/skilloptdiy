@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .backend import (
@@ -29,6 +30,8 @@ class PaperOptimizationController:
     optimizer_backend: OptimizerBackend
     selection: SelectionController
     train: TrainController
+    skill_validator: Callable[[str], None] | None = None
+    skill_contract_description: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.selection) is not SelectionController:
@@ -41,6 +44,22 @@ class PaperOptimizationController:
             raise DataFirewallViolation(
                 "train and selection must share one controller registry"
             )
+        if self.skill_validator is not None and not callable(self.skill_validator):
+            raise DataFirewallViolation("skill validator must be callable")
+        if self.skill_contract_description is not None and (
+            type(self.skill_contract_description) is not str
+            or not self.skill_contract_description.strip()
+        ):
+            raise DataFirewallViolation(
+                "skill contract description must be a non-empty string"
+            )
+
+    def validate_skill(self, skill_text: str) -> None:
+        self.__post_init__()
+        if type(skill_text) is not str or not skill_text.strip():
+            raise DataFirewallViolation("skill validation requires skill_text")
+        if self.skill_validator is not None:
+            self.skill_validator(skill_text)
 
     def score_candidate(
         self,
@@ -49,6 +68,7 @@ class PaperOptimizationController:
         candidate_skill: str,
     ) -> SelectionDecision:
         self.__post_init__()
+        self.validate_skill(candidate_skill)
         candidate = self.selection.score(candidate_skill)
         return strict_selection_decision(current=current, candidate=candidate)
 
@@ -65,6 +85,7 @@ class PaperOptimizationController:
                 "optimizer seam accepts only the sealed OptimizerPayload type"
             )
         payload.__post_init__()
+        self.validate_skill(payload.current_skill)
         train_trajectories = self.train.verify(
             payload.train_evidence,
             current_skill=payload.current_skill,
@@ -74,6 +95,15 @@ class PaperOptimizationController:
                 {
                     "current_skill": payload.current_skill,
                     "train_trajectories": list(train_trajectories),
+                    **(
+                        {
+                            "immutable_skill_contract": (
+                                self.skill_contract_description
+                            )
+                        }
+                        if self.skill_contract_description is not None
+                        else {}
+                    ),
                 },
                 ensure_ascii=False,
                 allow_nan=False,

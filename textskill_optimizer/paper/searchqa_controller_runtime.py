@@ -6,6 +6,7 @@ import argparse
 import collections
 import hashlib
 import json
+import os
 import queue
 import random
 import re
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .controller_process import canonical_json, canonical_json_sha256
 from .epoch_plan import PaperEpochPlan
@@ -521,6 +523,9 @@ def _parser(role: str) -> argparse.ArgumentParser:
     parser.add_argument("--rollout-prompt", type=Path, required=True)
     if role == "train":
         parser.add_argument("--plan", type=Path, required=True)
+    else:
+        parser.add_argument("--selection-audit", type=Path, required=True)
+        parser.add_argument("--selection-audit-key", type=Path, required=True)
     return parser
 
 
@@ -598,7 +603,7 @@ def _score_selection(
         with ThreadPoolExecutor(
             max_workers=_target_worker_count(args, len(items))
         ) as executor:
-            scores = list(
+            results = list(
                 executor.map(
                     lambda item: _evaluate_target(
                         args,
@@ -606,14 +611,150 @@ def _score_selection(
                         item,
                         guard=guard,
                         coco_pool=coco_pool,
-                    )[1],
+                    ),
                     items,
                 )
             )
     finally:
         if coco_pool is not None:
             coco_pool.close()
-    return {"score": float(sum(scores) / len(scores))}
+    scores = [score for _, score in results]
+    aggregate = float(sum(scores) / len(scores))
+    _append_selection_audit(
+        args.selection_audit,
+        key_path=args.selection_audit_key,
+        request=request,
+        items=items,
+        results=tuple(results),
+        score=aggregate,
+    )
+    return {"score": aggregate}
+
+
+def _append_selection_audit(
+    path: Path,
+    *,
+    key_path: Path,
+    request: dict[str, Any],
+    items: tuple[SearchQAItem, ...],
+    results: tuple[tuple[TargetResult, float], ...],
+    score: float,
+) -> None:
+    if len(items) != len(results):
+        raise RuntimeError("selection audit result count does not match items")
+    prior = list(unseal_searchqa_selection_audit(path, key_path=key_path))
+    previous_hash = prior[-1]["record_sha256"] if prior else None
+    record = {
+        "schema_version": "searchqa-selection-audit-v1",
+        "sequence": len(prior) + 1,
+        "previous_record_sha256": previous_hash,
+        "request_sha256": canonical_json_sha256(request),
+        "skill_sha256": hashlib.sha256(
+            request["skill_text"].encode("utf-8")
+        ).hexdigest(),
+        "score": score,
+        "items": [
+            {
+                "task_id": item.item_id,
+                "exact_match": exact_match,
+                "predicted_answer": score_searchqa_response(
+                    result.response,
+                    item.answers,
+                ).predicted_answer,
+                "response_sha256": hashlib.sha256(
+                    result.response.encode("utf-8")
+                ).hexdigest(),
+            }
+            for item, (result, exact_match) in zip(items, results)
+        ],
+    }
+    record["record_sha256"] = canonical_json_sha256(record)
+    sequence = record["sequence"]
+    aad = canonical_json(
+        {
+            "schema_version": "searchqa-selection-audit-sealed-v1",
+            "sequence": sequence,
+        }
+    ).encode("utf-8")
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(_selection_audit_key(key_path)).encrypt(
+        nonce,
+        canonical_json(record).encode("utf-8"),
+        aad,
+    )
+    envelope = {
+        "schema_version": "searchqa-selection-audit-sealed-v1",
+        "sequence": sequence,
+        "nonce": nonce.hex(),
+        "ciphertext": ciphertext.hex(),
+        "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(canonical_json(envelope) + "\n")
+
+
+def unseal_searchqa_selection_audit(
+    path: Path,
+    *,
+    key_path: Path,
+) -> tuple[dict[str, Any], ...]:
+    if not path.exists():
+        return ()
+    key = _selection_audit_key(key_path)
+    records = []
+    for expected_sequence, line in enumerate(
+        (line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()),
+        1,
+    ):
+        envelope = json.loads(line)
+        if type(envelope) is not dict or set(envelope) != {
+            "schema_version",
+            "sequence",
+            "nonce",
+            "ciphertext",
+            "ciphertext_sha256",
+        }:
+            raise RuntimeError("sealed selection audit fields are invalid")
+        try:
+            nonce = bytes.fromhex(envelope["nonce"])
+            ciphertext = bytes.fromhex(envelope["ciphertext"])
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("sealed selection audit encoding is invalid") from error
+        if (
+            envelope["schema_version"]
+            != "searchqa-selection-audit-sealed-v1"
+            or envelope["sequence"] != expected_sequence
+            or len(nonce) != 12
+            or hashlib.sha256(ciphertext).hexdigest()
+            != envelope["ciphertext_sha256"]
+        ):
+            raise RuntimeError("sealed selection audit envelope is invalid")
+        aad = canonical_json(
+            {
+                "schema_version": envelope["schema_version"],
+                "sequence": expected_sequence,
+            }
+        ).encode("utf-8")
+        try:
+            plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
+            record = json.loads(plaintext)
+        except Exception as error:
+            raise RuntimeError("sealed selection audit authentication failed") from error
+        if type(record) is not dict:
+            raise RuntimeError("sealed selection audit plaintext is invalid")
+        records.append(record)
+    return tuple(records)
+
+
+def _selection_audit_key(path: Path) -> bytes:
+    try:
+        key = bytes.fromhex(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError) as error:
+        raise RuntimeError("selection audit key is unreadable") from error
+    if len(key) != 32:
+        raise RuntimeError("selection audit key must contain 32 bytes")
+    return key
 
 
 def _trajectory(

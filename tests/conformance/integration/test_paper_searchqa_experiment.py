@@ -163,9 +163,26 @@ class PaperSearchQAExperimentTests(unittest.TestCase):
 
             receipt_path = run_searchqa_experiment(preregistration_path)
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            evidence = receipt["evidence_artifacts"]
+            evidence_payloads = {}
+            evidence_texts = {}
+            for name, artifact in evidence.items():
+                path = receipt_path.parent / artifact["path"]
+                self.assertEqual(
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                    artifact["sha256"],
+                )
+                evidence_payloads[name] = path
+                evidence_texts[name] = path.read_text(encoding="utf-8")
+            sealed_audit_exists = (
+                receipt_path.parent / "selection-audit.sealed.jsonl"
+            ).exists()
             with self.assertRaisesRegex(ValueError, "single-use"):
                 run_searchqa_experiment(preregistration_path)
 
+        self.assertEqual(
+            receipt["schema_version"], "paper-searchqa-development-receipt-v2"
+        )
         self.assertEqual(receipt["status"], "completed")
         self.assertEqual(receipt["completed_epochs"], 4)
         self.assertEqual(receipt["completed_steps"], 4)
@@ -179,6 +196,41 @@ class PaperSearchQAExperimentTests(unittest.TestCase):
         self.assertGreater(receipt["usage"]["estimated_optimizer_tokens"], 0)
         self.assertEqual(receipt["test_access"], {"allowed": False, "attempt": 0})
         self.assertEqual(receipt["test_payload_status"], "not_materialized")
+        self.assertTrue(
+            {
+                "artifact_lineage",
+                "candidate_skills",
+                "checkpoint",
+                "events",
+                "final_skill",
+                "final_state",
+                "optimizer_exchanges",
+                "selection_audit",
+            }.issubset(evidence)
+        )
+        final_state = json.loads(evidence_texts["final_state"])
+        self.assertEqual(
+            evidence_texts["final_skill"],
+            final_state["current_skill"],
+        )
+        candidates = json.loads(evidence_texts["candidate_skills"])
+        self.assertGreater(len(candidates["skills"]), 1)
+        events = json.loads(evidence_texts["events"])
+        self.assertEqual(len(events["events"]), sum(receipt["event_counts"].values()))
+        checkpoint = json.loads(evidence_texts["checkpoint"])
+        self.assertTrue(checkpoint["payload"]["run_completed"])
+        selection_audits = [
+            json.loads(line)
+            for line in evidence_texts["selection_audit"].splitlines()
+            if line.strip()
+        ]
+        self.assertGreater(len(selection_audits), 1)
+        self.assertTrue(all(len(item["items"]) == 20 for item in selection_audits))
+        optimizer_exchanges = evidence_texts["optimizer_exchanges"]
+        self.assertNotIn("selection-000", optimizer_exchanges)
+        self.assertIn("immutable_skill_contract", optimizer_exchanges)
+        self.assertIn("<answer>...</answer>", optimizer_exchanges)
+        self.assertFalse(sealed_audit_exists)
         for required in (
             "run_started",
             "failure_reflected",
@@ -225,7 +277,7 @@ class PaperSearchQAExperimentTests(unittest.TestCase):
 
         self.assertEqual(
             receipt["schema_version"],
-            "paper-searchqa-development-stop-receipt-v1",
+            "paper-searchqa-development-stop-receipt-v2",
         )
         self.assertEqual(receipt["status"], "stopped")
         self.assertEqual(receipt["stop_reason"], "selection_saturation")
@@ -238,6 +290,8 @@ class PaperSearchQAExperimentTests(unittest.TestCase):
         self.assertEqual(receipt["test_access"], {"allowed": False, "attempt": 0})
         self.assertEqual(receipt["test_payload_status"], "not_materialized")
         self.assertIsNone(receipt["claim_class"])
+        self.assertIn("selection_audit", receipt["evidence_artifacts"])
+        self.assertIn("checkpoint", receipt["evidence_artifacts"])
 
     def test_prepare_rejects_a_saturated_or_too_small_smoke_slice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

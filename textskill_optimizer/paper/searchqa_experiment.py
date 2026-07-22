@@ -18,12 +18,14 @@ from collections import Counter
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from .artifacts import PaperArtifactKind
 from .backend import OptimizerRequest, OptimizerResponse, OptimizerStage
+from .checkpoint import CheckpointAuthenticator
 from .config import load_paper_profile
 from .controller_process import (
     ControllerArtifact,
@@ -35,6 +37,7 @@ from .data import SelectionController, TrainController
 from .epoch_loop import PaperEpochLoop
 from .epoch_plan import PaperEpochPlan
 from .epoch_plan import PaperMechanismSpec
+from .errors import SkillContractViolation
 from .optimization import PaperOptimizationController
 from .preregistration import load_paper_preregistration
 from .provenance import canonical_json_sha256
@@ -42,13 +45,16 @@ from .searchqa import (
     OFFICIAL_SEARCHQA_ID_MANIFEST_SHA256,
     SEARCHQA_DATASET_REPO,
     SEARCHQA_DATASET_REVISION,
+    SearchQAContractViolation,
     load_searchqa_items,
+    require_searchqa_skill_rollout_compatibility,
     verify_searchqa_materialization_receipt,
 )
 from .searchqa_controller_runtime import (
     ACP_STARTUP_TIMEOUT_SECONDS,
     COCO_ACP_WORKERS,
     SCRIPTED_IMPROVEMENT_TOKEN,
+    unseal_searchqa_selection_audit,
 )
 
 
@@ -465,7 +471,12 @@ def prepare_zero_call_searchqa_experiment(
     selection_public = _write_private_key(selection_key_path)
     train_usage = run_root / "train-usage.jsonl"
     selection_usage = run_root / "selection-usage.jsonl"
+    selection_audit = run_root / "selection-audit.sealed.jsonl"
     optimizer_usage = run_root / "optimizer-usage.jsonl"
+    checkpoint_key_path = run_root / "checkpoint-auth.key"
+    _write_secret_key(checkpoint_key_path)
+    selection_audit_key_path = run_root / "selection-audit.key"
+    _write_secret_key(selection_audit_key_path)
     authorities_path = run_root / "controller-authorities.json"
     _write_json(
         authorities_path,
@@ -474,7 +485,10 @@ def prepare_zero_call_searchqa_experiment(
             "selection_public_key": selection_public,
             "train_usage_path": str(train_usage),
             "selection_usage_path": str(selection_usage),
+            "selection_audit_path": str(selection_audit),
             "optimizer_usage_path": str(optimizer_usage),
+            "checkpoint_key_path": str(checkpoint_key_path),
+            "selection_audit_key_path": str(selection_audit_key_path),
         },
     )
 
@@ -495,6 +509,8 @@ def prepare_zero_call_searchqa_experiment(
         "rollout_prompt": _ROLLOUT_PROMPT_PATH,
         "train_private_key": train_key_path,
         "selection_private_key": selection_key_path,
+        "checkpoint_key": checkpoint_key_path,
+        "selection_audit_key": selection_audit_key_path,
         "controller_authorities": authorities_path,
         "materialization_receipt": materialization.receipt_path,
         "official_train_id_manifest": materialization.train_manifest_path,
@@ -714,6 +730,14 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
         selection=SelectionController(
             registry=registry, controller_id="searchqa-selection-owner"
         ),
+        skill_validator=_searchqa_skill_validator(
+            prereg.artifact("rollout_prompt").path.read_text(encoding="utf-8")
+        ),
+        skill_contract_description=(
+            "The rollout system requires the final answer inside "
+            "<answer>...</answer> tags. Learned rules must preserve, and must "
+            "never negate, that immutable output contract."
+        ),
     )
     profile = load_paper_profile()
     plan = PaperEpochPlan.from_mapping(
@@ -737,10 +761,15 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
                 optimizer_backend=backend,
             )
             event_counts = Counter(event.event_type.value for event in loop.events)
+            evidence_artifacts = _persist_run_evidence(
+                run_root=run_root,
+                loop=loop,
+                authorities=authorities,
+            )
             _write_json(
                 receipt_path,
                 {
-                    "schema_version": "paper-searchqa-development-stop-receipt-v1",
+                    "schema_version": "paper-searchqa-development-stop-receipt-v2",
                     "status": "stopped",
                     "stage": prereg.stage,
                     "stop_reason": "selection_saturation",
@@ -762,6 +791,7 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
                     ],
                     "claim_class": None,
                     "evidence_level": None,
+                    "evidence_artifacts": evidence_artifacts,
                 },
             )
             prereg.verify()
@@ -833,10 +863,15 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
                     + error_message[-983:]
                 )
             state = loop.state if initial_state is not None else None
+            evidence_artifacts = _persist_run_evidence(
+                run_root=run_root,
+                loop=loop,
+                authorities=authorities,
+            )
             _write_json(
                 receipt_path,
                 {
-                    "schema_version": "paper-searchqa-development-stop-receipt-v1",
+                    "schema_version": "paper-searchqa-development-stop-receipt-v2",
                     "status": "stopped",
                     "stage": prereg.stage,
                     "stop_reason": (
@@ -870,12 +905,18 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
                     ],
                     "claim_class": None,
                     "evidence_level": None,
+                    "evidence_artifacts": evidence_artifacts,
                 },
             )
             prereg.verify()
         raise
+    evidence_artifacts = _persist_run_evidence(
+        run_root=run_root,
+        loop=loop,
+        authorities=authorities,
+    )
     receipt = {
-        "schema_version": "paper-searchqa-development-receipt-v1",
+        "schema_version": "paper-searchqa-development-receipt-v2",
         "status": "completed",
         "stage": prereg.stage,
         "preregistration_sha256": _sha256(prereg.source_path),
@@ -894,6 +935,7 @@ def run_searchqa_experiment(preregistration_path: str | Path) -> Path:
         "test_payload_status": payload["benchmark"]["test_payload_status"],
         "claim_class": "mechanism_test",
         "evidence_level": None,
+        "evidence_artifacts": evidence_artifacts,
     }
     _write_json(receipt_path, receipt)
     prereg.verify()
@@ -977,6 +1019,10 @@ def _build_registry(
         str(authorities["train_usage_path"]),
         "--rollout-prompt",
         str(prereg.artifact("rollout_prompt").path),
+        "--selection-audit",
+        str(authorities["selection_audit_path"]),
+        "--selection-audit-key",
+        str(authorities["selection_audit_key_path"]),
         *budget_argv,
         *coco_argv,
     )
@@ -1006,6 +1052,9 @@ def _build_registry(
         _controller_artifact("data", prereg.artifact("selection_items")),
         _controller_artifact(
             "private_key", prereg.artifact("selection_private_key")
+        ),
+        _controller_artifact(
+            "selection_audit_key", prereg.artifact("selection_audit_key")
         ),
         *(
             _controller_artifact(artifact_id, prereg.artifact(artifact_id))
@@ -1099,6 +1148,29 @@ def _write_private_key(path: Path) -> str:
     ).hex()
 
 
+def _write_secret_key(path: Path) -> None:
+    path.write_text(os.urandom(32).hex() + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
+def _searchqa_skill_validator(
+    rollout_prompt: str,
+) -> Callable[[str], None]:
+    def validate(skill_text: str) -> None:
+        try:
+            require_searchqa_skill_rollout_compatibility(
+                skill_text,
+                rollout_prompt,
+            )
+        except SearchQAContractViolation as error:
+            raise SkillContractViolation(
+                "searchqa_answer_wrapper_conflict",
+                str(error),
+            ) from error
+
+    return validate
+
+
 def _usage_summary(
     train_path: Path,
     selection_path: Path,
@@ -1176,6 +1248,286 @@ def _write_json(path: Path, payload: Any) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def _persist_run_evidence(
+    *,
+    run_root: Path,
+    loop: PaperEpochLoop,
+    authorities: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Seal complete runtime evidence before a terminal receipt is written."""
+
+    evidence_paths: dict[str, Path] = {}
+    lineage = loop.artifact_lineage
+    lineage_path = run_root / "artifact-lineage.json"
+    _write_json(
+        lineage_path,
+        {
+            "schema_version": "paper-run-artifact-lineage-v1",
+            "lineage_sha256": lineage.sha256,
+            "records": lineage.to_checkpoint_list(),
+        },
+    )
+    evidence_paths["artifact_lineage"] = lineage_path
+
+    events_path = run_root / "events.json"
+    _write_json(
+        events_path,
+        {
+            "schema_version": "paper-run-events-v1",
+            "events": [event.to_dict() for event in loop.events],
+        },
+    )
+    evidence_paths["events"] = events_path
+
+    skills_path = run_root / "candidate-skills.json"
+    _write_json(
+        skills_path,
+        {
+            "schema_version": "paper-run-candidate-skills-v1",
+            "skills": [
+                {
+                    "artifact_id": record.artifact_id,
+                    "parent_ids": list(record.parent_ids),
+                    **dict(record.payload),
+                }
+                for record in lineage.records_of_kind(PaperArtifactKind.SKILL)
+            ],
+        },
+    )
+    evidence_paths["candidate_skills"] = skills_path
+
+    optimizer_requests = {
+        record.artifact_id: record
+        for record in lineage.records_of_kind(PaperArtifactKind.OPTIMIZER_REQUEST)
+    }
+    exchanges = []
+    for response in lineage.records_of_kind(PaperArtifactKind.OPTIMIZER_RESPONSE):
+        request_ids = [
+            parent_id
+            for parent_id in response.parent_ids
+            if parent_id in optimizer_requests
+        ]
+        if len(request_ids) != 1:
+            raise RuntimeError("optimizer response lineage lacks one request parent")
+        request = optimizer_requests[request_ids[0]]
+        exchanges.append(
+            {
+                "request_artifact_id": request.artifact_id,
+                "request": dict(request.payload),
+                "response_artifact_id": response.artifact_id,
+                "response": dict(response.payload),
+            }
+        )
+    exchanges_path = run_root / "optimizer-exchanges.json"
+    _write_json(
+        exchanges_path,
+        {
+            "schema_version": "paper-run-optimizer-exchanges-v1",
+            "exchanges": exchanges,
+        },
+    )
+    evidence_paths["optimizer_exchanges"] = exchanges_path
+
+    try:
+        state = loop.state
+    except ValueError:
+        state = None
+    if state is not None:
+        final_state_path = run_root / "final-state.json"
+        _write_json(
+            final_state_path,
+            {
+                "schema_version": "paper-run-final-state-v1",
+                "epoch": state.epoch,
+                "step": state.step,
+                "current_skill": state.current_skill,
+                "current_skill_sha256": hashlib.sha256(
+                    state.current_skill.encode("utf-8")
+                ).hexdigest(),
+                "current_score": state.current_score.value,
+                "best_skill": state.best_skill,
+                "best_skill_sha256": hashlib.sha256(
+                    state.best_skill.encode("utf-8")
+                ).hexdigest(),
+                "best_score": state.best_score.value,
+                "meta_skill": state.meta_skill,
+            },
+        )
+        evidence_paths["final_state"] = final_state_path
+        final_skill_path = run_root / "final-skill.md"
+        final_skill_path.write_text(state.current_skill, encoding="utf-8")
+        evidence_paths["final_skill"] = final_skill_path
+        best_skill_path = run_root / "best-skill.md"
+        best_skill_path.write_text(state.best_skill, encoding="utf-8")
+        evidence_paths["best_skill"] = best_skill_path
+
+        checkpoint_key_path = Path(authorities["checkpoint_key_path"])
+        checkpoint_key = bytes.fromhex(
+            checkpoint_key_path.read_text(encoding="utf-8").strip()
+        )
+        authenticator = CheckpointAuthenticator(
+            key_id="searchqa-runtime-" + _sha256(checkpoint_key_path)[:16],
+            secret_key=checkpoint_key,
+        )
+        checkpoint_path = run_root / "checkpoint.json"
+        _write_json(checkpoint_path, loop.checkpoint(authenticator).to_dict())
+        evidence_paths["checkpoint"] = checkpoint_path
+
+    sealed_audit = Path(authorities["selection_audit_path"])
+    selection_audit = run_root / "selection-audit.jsonl"
+    if sealed_audit.exists():
+        records = unseal_searchqa_selection_audit(
+            sealed_audit,
+            key_path=Path(authorities["selection_audit_key_path"]),
+        )
+        selection_audit.write_text(
+            "".join(
+                json.dumps(
+                    record,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+                for record in records
+            ),
+            encoding="utf-8",
+        )
+        sealed_audit.unlink()
+    elif not selection_audit.exists():
+        selection_audit.write_text("", encoding="utf-8")
+    _verify_selection_audit(selection_audit)
+    evidence_paths["selection_audit"] = selection_audit
+
+    for name, raw_path in (
+        ("train_usage", authorities["train_usage_path"]),
+        ("selection_usage", authorities["selection_usage_path"]),
+        ("optimizer_usage", authorities["optimizer_usage_path"]),
+    ):
+        path = Path(raw_path)
+        if path.exists():
+            evidence_paths[name] = path
+
+    return {
+        name: {
+            "path": str(path.relative_to(run_root)),
+            "sha256": _sha256(path),
+            "size_bytes": path.stat().st_size,
+        }
+        for name, path in sorted(evidence_paths.items())
+    }
+
+
+def _verify_selection_audit(path: Path) -> None:
+    records = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    previous_hash = None
+    for sequence, record in enumerate(records, 1):
+        if type(record) is not dict or set(record) != {
+            "schema_version",
+            "sequence",
+            "previous_record_sha256",
+            "request_sha256",
+            "skill_sha256",
+            "score",
+            "items",
+            "record_sha256",
+        }:
+            raise RuntimeError("selection audit fields do not match the contract")
+        claimed_hash = record["record_sha256"]
+        unsigned = dict(record)
+        del unsigned["record_sha256"]
+        if (
+            record["schema_version"] != "searchqa-selection-audit-v1"
+            or record["sequence"] != sequence
+            or record["previous_record_sha256"] != previous_hash
+            or re.fullmatch(r"[0-9a-f]{64}", str(record["request_sha256"]))
+            is None
+            or re.fullmatch(r"[0-9a-f]{64}", str(record["skill_sha256"]))
+            is None
+            or re.fullmatch(r"[0-9a-f]{64}", str(claimed_hash)) is None
+            or canonical_json_sha256(unsigned) != claimed_hash
+            or type(record["items"]) is not list
+            or not record["items"]
+        ):
+            raise RuntimeError("selection audit hash chain is invalid")
+        task_ids = []
+        for item in record["items"]:
+            if type(item) is not dict or set(item) != {
+                "task_id",
+                "exact_match",
+                "predicted_answer",
+                "response_sha256",
+            }:
+                raise RuntimeError("selection audit item fields are invalid")
+            if (
+                type(item["task_id"]) is not str
+                or not item["task_id"]
+                or type(item["exact_match"]) not in {int, float}
+                or item["exact_match"] not in {0.0, 1.0}
+                or type(item["predicted_answer"]) is not str
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(item["response_sha256"]),
+                )
+                is None
+            ):
+                raise RuntimeError("selection audit item value is invalid")
+            task_ids.append(item["task_id"])
+        expected_score = sum(
+            float(item["exact_match"]) for item in record["items"]
+        ) / len(record["items"])
+        if (
+            len(task_ids) != len(set(task_ids))
+            or type(record["score"]) not in {int, float}
+            or not math.isclose(float(record["score"]), expected_score)
+        ):
+            raise RuntimeError("selection audit aggregate is invalid")
+        previous_hash = claimed_hash
+
+
+def _verify_receipt_evidence_artifacts(
+    payload: object,
+    *,
+    root: Path,
+) -> None:
+    required = {
+        "artifact_lineage",
+        "candidate_skills",
+        "checkpoint",
+        "events",
+        "final_skill",
+        "final_state",
+        "optimizer_exchanges",
+        "selection_audit",
+    }
+    if type(payload) is not dict or not required.issubset(payload):
+        raise ValueError("receipt is missing required run evidence artifacts")
+    resolved_root = root.resolve()
+    for name, artifact in payload.items():
+        if type(name) is not str or type(artifact) is not dict or set(artifact) != {
+            "path",
+            "sha256",
+            "size_bytes",
+        }:
+            raise ValueError("receipt evidence artifact fields are invalid")
+        raw_path = artifact["path"]
+        if type(raw_path) is not str or not raw_path or Path(raw_path).is_absolute():
+            raise ValueError("receipt evidence artifact path must be relative")
+        path = (resolved_root / raw_path).resolve()
+        if path.parent != resolved_root or not path.is_file():
+            raise ValueError("receipt evidence artifact escaped or is missing")
+        if (
+            _sha256(path) != artifact["sha256"]
+            or path.stat().st_size != artifact["size_bytes"]
+        ):
+            raise ValueError("receipt evidence artifact hash or size drifted")
 
 
 def _sha256(path: Path) -> str:
@@ -1265,8 +1617,18 @@ def _default_coco_config_path() -> Path:
 def _require_fresh_run(run_root: Path, authorities: Mapping[str, Any]) -> None:
     paths = (
         run_root / "receipt.json",
+        run_root / "artifact-lineage.json",
+        run_root / "events.json",
+        run_root / "candidate-skills.json",
+        run_root / "optimizer-exchanges.json",
+        run_root / "final-state.json",
+        run_root / "final-skill.md",
+        run_root / "best-skill.md",
+        run_root / "checkpoint.json",
+        run_root / "selection-audit.jsonl",
         Path(authorities["train_usage_path"]),
         Path(authorities["selection_usage_path"]),
+        Path(authorities["selection_audit_path"]),
         Path(authorities["optimizer_usage_path"]),
     )
     if any(path.exists() for path in paths):
@@ -1334,6 +1696,7 @@ def _load_mechanism_dry_run_evidence(
         "test_payload_status",
         "claim_class",
         "evidence_level",
+        "evidence_artifacts",
     }
     if type(receipt) is not dict or set(receipt) != expected_keys:
         raise ValueError("mechanism dry-run receipt fields do not match the contract")
@@ -1349,7 +1712,7 @@ def _load_mechanism_dry_run_evidence(
     }
     usage = receipt["usage"]
     if (
-        receipt["schema_version"] != "paper-searchqa-development-receipt-v1"
+        receipt["schema_version"] != "paper-searchqa-development-receipt-v2"
         or receipt["status"] != "completed"
         or receipt["stage"] != "zero_call_dry_run"
         or receipt["completed_epochs"] != 2
@@ -1377,6 +1740,10 @@ def _load_mechanism_dry_run_evidence(
         )
     ):
         raise ValueError("mechanism dry-run receipt is not eligible for paid caps")
+    _verify_receipt_evidence_artifacts(
+        receipt["evidence_artifacts"],
+        root=receipt_path.parent,
+    )
     dry_prereg_path = receipt_path.parent / "preregistration.json"
     dry_prereg = load_paper_preregistration(dry_prereg_path)
     checks = {

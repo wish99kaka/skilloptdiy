@@ -20,6 +20,7 @@ from .data import (
     strict_selection_decision,
 )
 from .epoch_plan import EpochBatchCursor, PaperMechanismSpec
+from .errors import SkillContractViolation
 from .optimization import PaperOptimizationController
 from .patches import (
     PatchApplyResult,
@@ -103,6 +104,7 @@ class FastStepResult:
     ranked_suggestions: tuple[PaperSuggestion, ...] = ()
     rewrite_result: RewriteApplyResult | None = None
     optimizer_exchanges: tuple[OptimizerExchange, ...] = ()
+    selection_skipped_reason: str | None = None
 
     def replay(self) -> PatchApplyResult | RewriteApplyResult:
         if self.rewrite_result is None:
@@ -131,6 +133,7 @@ class ExternalGateResult:
     delta: float
     cache_hit: bool
     events: tuple[AlgorithmEvent, ...]
+    selection_skipped_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,8 @@ class _ExternalGatePreview:
     delta: float
     cache_hit: bool
     score_cache: tuple[tuple[str, SelectionScore], ...]
+    selection_skipped_reason: str | None = None
+    selection_skipped_message: str | None = None
 
 
 class PaperFastLoop:
@@ -209,6 +214,7 @@ class PaperFastLoop:
             raise ValueError("paper fast loop requires initial_skill")
         if self._score_cache:
             raise ValueError("paper fast loop is already initialized")
+        self._controller.validate_skill(initial_skill)
         score = self._controller.selection.score(initial_skill)
         self._score_cache[_sha256(initial_skill)] = score
         self._state = PaperState(
@@ -380,21 +386,36 @@ class PaperFastLoop:
         candidate_hash = _sha256(candidate_skill)
         candidate_score = working_cache.get(candidate_hash)
         cache_hit = candidate_score is not None
+        skipped_reason = None
+        skipped_message = None
         if candidate_score is None:
-            candidate_score = self._controller.selection.score(candidate_skill)
-            working_cache[candidate_hash] = candidate_score
-        decision = strict_selection_decision(
-            current=state.current_score,
-            candidate=candidate_score,
+            try:
+                self._controller.validate_skill(candidate_skill)
+            except SkillContractViolation as error:
+                candidate_score = state.current_score
+                skipped_reason = error.code
+                skipped_message = str(error)
+            else:
+                candidate_score = self._controller.selection.score(candidate_skill)
+                working_cache[candidate_hash] = candidate_score
+        decision = (
+            strict_selection_decision(
+                current=state.current_score,
+                candidate=candidate_score,
+            )
+            if skipped_reason is None
+            else None
         )
         return _ExternalGatePreview(
             input_state=state,
             candidate_skill_sha256=candidate_hash,
             candidate_score=candidate_score,
-            accepted=decision.accepted,
-            delta=decision.delta,
+            accepted=decision.accepted if decision is not None else False,
+            delta=decision.delta if decision is not None else 0.0,
             cache_hit=cache_hit,
             score_cache=tuple(sorted(working_cache.items())),
+            selection_skipped_reason=skipped_reason,
+            selection_skipped_message=skipped_message,
         )
 
     def _commit_external_candidate(
@@ -429,19 +450,20 @@ class PaperFastLoop:
                 payload=dict(proposal_payload),
             )
         ]
-        self._append_event(
-            events,
-            AlgorithmEventType.SELECTION_SCORED,
-            state,
-            state.step,
-            {
-                "candidate_skill_sha256": candidate_hash,
-                "candidate_score": candidate_score.value,
-                "current_score": state.current_score.value,
-                "cache_hit": preview.cache_hit,
-                "source": source,
-            },
-        )
+        if preview.selection_skipped_reason is None:
+            self._append_event(
+                events,
+                AlgorithmEventType.SELECTION_SCORED,
+                state,
+                state.step,
+                {
+                    "candidate_skill_sha256": candidate_hash,
+                    "candidate_score": candidate_score.value,
+                    "current_score": state.current_score.value,
+                    "cache_hit": preview.cache_hit,
+                    "source": source,
+                },
+            )
         if preview.accepted:
             best_skill = state.best_skill
             best_score = state.best_score
@@ -468,8 +490,21 @@ class PaperFastLoop:
             state.step,
             {
                 "candidate_skill_sha256": candidate_hash,
-                "delta": preview.delta,
+                "delta": (
+                    None
+                    if preview.selection_skipped_reason is not None
+                    else preview.delta
+                ),
                 "source": source,
+                **(
+                    {
+                        "reason": "skill_contract_violation",
+                        "violation_code": preview.selection_skipped_reason,
+                        "violation_message": preview.selection_skipped_message,
+                    }
+                    if preview.selection_skipped_reason is not None
+                    else {}
+                ),
             },
         )
         self._score_cache = dict(preview.score_cache)
@@ -482,6 +517,7 @@ class PaperFastLoop:
             delta=preview.delta,
             cache_hit=preview.cache_hit,
             events=tuple(events),
+            selection_skipped_reason=preview.selection_skipped_reason,
         )
 
     def _update_meta_skill(self, meta_skill: str) -> PaperState:
@@ -843,9 +879,22 @@ class PaperFastLoop:
         candidate_score = working_cache.get(candidate_hash)
         cache_hit = candidate_score is not None
         if candidate_score is None:
-            candidate_score = self._controller.selection.score(
-                apply_result.output_skill
-            )
+            try:
+                self._controller.validate_skill(apply_result.output_skill)
+            except SkillContractViolation as error:
+                return self._reject_contract_candidate(
+                    state=state,
+                    step=step,
+                    error=error,
+                    events=events,
+                    working_cache=working_cache,
+                    apply_result=apply_result,
+                    ranked_edits=ranked_edits,
+                    ranked_suggestions=ranked_suggestions,
+                    rewrite_result=rewrite_result,
+                    failure_patterns=tuple(observed_failure_patterns),
+                )
+            candidate_score = self._controller.selection.score(apply_result.output_skill)
             working_cache[candidate_hash] = candidate_score
         decision = strict_selection_decision(
             current=state.current_score,
@@ -1493,6 +1542,61 @@ class PaperFastLoop:
         self._state = next_state
         return result
 
+    def _reject_contract_candidate(
+        self,
+        *,
+        state: PaperState,
+        step: int,
+        error: SkillContractViolation,
+        events: list[AlgorithmEvent],
+        working_cache: dict[str, SelectionScore],
+        apply_result: PatchApplyResult | RewriteApplyResult,
+        ranked_edits: tuple[PaperEdit, ...],
+        ranked_suggestions: tuple[PaperSuggestion, ...],
+        rewrite_result: RewriteApplyResult | None,
+        failure_patterns: tuple[ObservedFailurePattern, ...],
+    ) -> FastStepResult:
+        next_state = PaperState(
+            epoch=state.epoch,
+            step=step,
+            current_skill=state.current_skill,
+            current_score=state.current_score,
+            best_skill=state.best_skill,
+            best_score=state.best_score,
+            meta_skill=state.meta_skill,
+        )
+        self._append_event(
+            events,
+            AlgorithmEventType.CANDIDATE_REJECTED,
+            state,
+            step,
+            {
+                "candidate_skill_sha256": apply_result.output_sha256,
+                "delta": None,
+                "reason": "skill_contract_violation",
+                "violation_code": error.code,
+                "violation_message": str(error),
+            },
+        )
+        result = FastStepResult(
+            input_skill=state.current_skill,
+            state=next_state,
+            candidate_score=state.current_score,
+            ranked_edits=ranked_edits,
+            apply_result=apply_result,
+            events=tuple(events),
+            failure_patterns=failure_patterns,
+            ranked_suggestions=ranked_suggestions,
+            rewrite_result=rewrite_result,
+            optimizer_exchanges=self._take_optimizer_exchanges(),
+            selection_skipped_reason=error.code,
+        )
+        result.replay()
+        self._score_cache = working_cache
+        self._next_event_sequence += len(events)
+        self._state = next_state
+        return result
+
     def _complete(
         self,
         *,
@@ -1508,6 +1612,15 @@ class PaperFastLoop:
             prompt = json.dumps(
                 {
                     **prompt_payload,
+                    **(
+                        {
+                            "immutable_skill_contract": (
+                                self._controller.skill_contract_description
+                            )
+                        }
+                        if self._controller.skill_contract_description is not None
+                        else {}
+                    ),
                     "epoch_buffer": [
                         record.to_optimizer_payload()
                         for record in self._epoch_buffer

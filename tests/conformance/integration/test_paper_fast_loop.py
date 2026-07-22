@@ -14,6 +14,7 @@ from textskill_optimizer.paper import (
     OptimizerStage,
     PaperFastLoop,
     PaperProfileViolation,
+    SkillContractViolation,
     load_paper_profile,
 )
 
@@ -178,6 +179,49 @@ class SemanticFailureBackend(EmptyFastLoopBackend):
 
 
 class PaperFastLoopTests(unittest.TestCase):
+    def test_contract_conflict_is_rejected_without_selection_exposure(self) -> None:
+        def validator(skill_text: str) -> None:
+            if "accepted rule" in skill_text:
+                raise SkillContractViolation(
+                    "answer_wrapper_conflict",
+                    "candidate negates the frozen answer wrapper",
+                )
+
+        backend = GoldenFastLoopBackend()
+        with tempfile.TemporaryDirectory() as tmp:
+            controller, train = build_runtime(
+                Path(tmp),
+                backend,
+                invalid_selection_after_first=True,
+                skill_validator=validator,
+            )
+            loop = PaperFastLoop(controller, profile=load_paper_profile())
+            state = loop.initialize("# Skill\n")
+            result = loop.run_step(
+                train_evidence=train.collect(state.current_skill),
+                edit_budget=2,
+            )
+
+        self.assertEqual(result.state.current_skill, state.current_skill)
+        self.assertEqual(result.candidate_score, state.current_score)
+        self.assertEqual(result.selection_skipped_reason, "answer_wrapper_conflict")
+        self.assertEqual(
+            result.events[-1].event_type,
+            AlgorithmEventType.CANDIDATE_REJECTED,
+        )
+        self.assertEqual(
+            result.events[-1].payload["reason"],
+            "skill_contract_violation",
+        )
+        self.assertIsNone(result.events[-1].payload["delta"])
+        self.assertFalse(
+            any(
+                event.event_type is AlgorithmEventType.SELECTION_SCORED
+                for event in result.events
+            )
+        )
+        self.assertGreater(len(result.optimizer_exchanges), 0)
+
     def test_untrusted_callers_cannot_inject_selection_cache(self) -> None:
         parameters = inspect.signature(PaperFastLoop).parameters
         run_parameters = inspect.signature(PaperFastLoop.run_step).parameters

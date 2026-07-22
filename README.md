@@ -91,6 +91,28 @@ python3 scripts/run_paper_searchqa.py zero-call \
     runs/searchqa-development-v1/materialization-receipt.json
 ```
 
+For a repeat smoke, keep the same 40-item train split and materialize the
+preregistered, disjoint 20-item selection split with selection seed 55. The
+materializer verifies its frozen output hash, verifies zero overlap with the
+primary seed-43 selection, and still never requests test payload rows:
+
+```bash
+python3 scripts/materialize_paper_searchqa.py \
+  --official-manifest-dir /path/to/SkillOpt/data/searchqa_id_split \
+  --output-dir runs/searchqa-development-v4 \
+  --train-size 40 \
+  --selection-size 20 \
+  --seed 42 \
+  --selection-seed 55
+python3 scripts/run_paper_searchqa.py zero-call \
+  --mechanism-smoke-scope \
+  --run-dir runs/searchqa-mechanism-dry-run-v4 \
+  --train runs/searchqa-development-v4/train.json \
+  --selection runs/searchqa-development-v4/selection.json \
+  --materialization-receipt \
+    runs/searchqa-development-v4/materialization-receipt.json
+```
+
 After committing the implementation, persist a fresh clean-commit M6 receipt
 and a new 40/20 mechanism dry-run receipt. `prepare-smoke` requires those exact
 receipts and rechecks the same clean commit:
@@ -118,6 +140,15 @@ optimizer token projections are still derived mechanically and actual usage is
 still recorded, but both are `audit_only`: they are excluded from experiment
 cost and go/no-go decisions. Call-count and wall-time limits remain hard safety
 boundaries.
+
+Every terminal run now seals the final and best skills, every candidate skill,
+the full event stream, optimizer request/response exchanges, authenticated
+checkpoint, content-addressed lineage, usage ledgers, and a post-run selection
+item audit. The terminal receipt binds each artifact by relative path, byte
+size, and SHA256. Selection item details remain in the selection-owned ledger
+as authenticated ciphertext during optimization; they are decrypted into the
+audit only at terminal sealing and are never returned to or included in
+optimizer requests.
 
 Read `docs/specs/skillopt-paper-faithful-roadmap.md` first. It defines source
 precedence, protocol isolation, the official-code reuse boundary, conformance

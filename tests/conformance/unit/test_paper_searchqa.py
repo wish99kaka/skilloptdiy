@@ -22,6 +22,7 @@ from textskill_optimizer.paper.searchqa import (
     get_searchqa_development_materialization_policy,
     load_searchqa_items,
     normalize_searchqa_answer,
+    require_searchqa_skill_rollout_compatibility,
     sample_searchqa_development_ids,
     score_searchqa_response,
     select_searchqa_development_rows,
@@ -42,10 +43,143 @@ from textskill_optimizer.paper.searchqa_controller_runtime import (
     _CocoACPWorker,
     _append_failed_usage,
     _evaluate_target,
+    _score_selection,
+    unseal_searchqa_selection_audit,
 )
 
 
 class PaperSearchQAContractTests(unittest.TestCase):
+    def test_selection_controller_persists_isolated_per_item_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rollout = root / "rollout.md"
+            rollout.write_text(
+                "{skill_section}Return <answer>value</answer>.",
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                backend="scripted",
+                rollout_prompt=rollout,
+                usage_ledger=root / "selection-usage.jsonl",
+                selection_audit=root / "selection-audit.sealed.jsonl",
+                selection_audit_key=root / "selection-audit.key",
+                target_model="scripted-searchqa-v1",
+                target_reasoning="none",
+            )
+            args.selection_audit_key.write_text("11" * 32, encoding="utf-8")
+            items = tuple(
+                SearchQAItem(
+                    f"selection-{index:03d}",
+                    f"Question {index}?",
+                    f"Context {index}",
+                    (f"value-{index}",),
+                )
+                for index in range(2)
+            )
+            request = {
+                "operation": "score_selection",
+                "skill_text": "A compatible skill",
+                "split_id": "selection-v1",
+                "split_manifest_sha256": "a" * 64,
+            }
+
+            response = _score_selection(args, request, items, guard=None)
+            sealed_audit = args.selection_audit.read_text(encoding="utf-8")
+            audit = unseal_searchqa_selection_audit(
+                args.selection_audit,
+                key_path=args.selection_audit_key,
+            )[0]
+
+        self.assertEqual(set(response), {"score"})
+        self.assertNotIn("selection-000", sealed_audit)
+        self.assertNotIn("predicted_answer", sealed_audit)
+        self.assertEqual(audit["schema_version"], "searchqa-selection-audit-v1")
+        self.assertEqual(audit["sequence"], 1)
+        self.assertEqual(audit["skill_sha256"], hashlib.sha256(
+            request["skill_text"].encode()
+        ).hexdigest())
+        self.assertEqual(
+            [item["task_id"] for item in audit["items"]],
+            ["selection-000", "selection-001"],
+        )
+        self.assertEqual(
+            audit["score"],
+            sum(item["exact_match"] for item in audit["items"]) / 2,
+        )
+        self.assertNotIn("items", response)
+
+    def test_skill_contract_rejects_the_v6_answer_tag_contradiction(self) -> None:
+        rollout = (
+            "Think step by step, then provide your final answer inside "
+            "<answer>...</answer> tags."
+        )
+
+        with self.assertRaisesRegex(
+            SearchQAContractViolation,
+            "contradicts the required <answer>",
+        ):
+            require_searchqa_skill_rollout_compatibility(
+                "Do not wrap the answer in `<answer>` tags "
+                "(or any other tags/delimiters).",
+                rollout,
+            )
+
+        with self.assertRaisesRegex(
+            SearchQAContractViolation,
+            "contradicts the required <answer>",
+        ):
+            require_searchqa_skill_rollout_compatibility(
+                "Output the raw answer only, without any tags or delimiters.",
+                rollout,
+            )
+
+        require_searchqa_skill_rollout_compatibility(
+            "Return the shortest context-supported entity.",
+            rollout,
+        )
+
+    def test_repeat_smoke_selection_is_deterministic_and_disjoint(self) -> None:
+        selection_ids = [f"{100 + index:032x}" for index in range(200)]
+        primary = sample_searchqa_development_ids(
+            train_ids=[f"{index:032x}" for index in range(40)],
+            selection_ids=selection_ids,
+            train_limit=40,
+            selection_limit=20,
+            seed=42,
+        )
+        repeat = sample_searchqa_development_ids(
+            train_ids=[f"{index:032x}" for index in range(40)],
+            selection_ids=selection_ids,
+            train_limit=40,
+            selection_limit=20,
+            seed=42,
+            selection_seed=55,
+        )
+
+        self.assertEqual(primary["train"], repeat["train"])
+        self.assertFalse(set(primary["selection"]) & set(repeat["selection"]))
+        self.assertEqual(
+            repeat,
+            sample_searchqa_development_ids(
+                train_ids=[f"{index:032x}" for index in range(40)],
+                selection_ids=selection_ids,
+                train_limit=40,
+                selection_limit=20,
+                seed=42,
+                selection_seed=55,
+            ),
+        )
+        policy = get_searchqa_development_materialization_policy(
+            train_limit=40,
+            selection_limit=20,
+            seed=42,
+            selection_seed=55,
+        )
+        self.assertEqual(
+            policy.schema_version,
+            "searchqa-development-materialization-v4",
+        )
+
     def test_coco_acp_pool_starts_five_workers_serially_then_runs_in_parallel(self) -> None:
         starts: list[int] = []
         active_by_worker: dict[int, int] = {}
@@ -634,7 +768,7 @@ for line in sys.stdin:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             train_ids = [f"{index:032x}" for index in range(40)]
-            selection_ids = [f"{100 + index:032x}" for index in range(20)]
+            selection_ids = [f"{100 + index:032x}" for index in range(200)]
             train_manifest = root / "official-train-ids.json"
             selection_manifest = root / "official-selection-ids.json"
             train_path = root / "train.json"
@@ -669,9 +803,10 @@ for line in sys.stdin:
             }
             receipt_path = root / "materialization-receipt.json"
             output_hashes = {}
-            for schema_version, selection_limit in (
-                ("searchqa-development-materialization-v2", 5),
-                ("searchqa-development-materialization-v3", 20),
+            for schema_version, selection_limit, selection_seed in (
+                ("searchqa-development-materialization-v2", 5, None),
+                ("searchqa-development-materialization-v3", 20, None),
+                ("searchqa-development-materialization-v4", 20, 55),
             ):
                 with self.subTest(schema_version=schema_version):
                     sampled = sample_searchqa_development_ids(
@@ -680,6 +815,7 @@ for line in sys.stdin:
                         train_limit=40,
                         selection_limit=selection_limit,
                         seed=42,
+                        selection_seed=selection_seed,
                     )
                     train_path.write_text(
                         json.dumps(items(sampled["train"])), encoding="utf-8"
@@ -718,11 +854,20 @@ for line in sys.stdin:
                                 "sha256": hashes["selection"],
                             },
                         },
-                        "sample": {
-                            "seed": 42,
-                            "train_limit": 40,
-                            "selection_limit": selection_limit,
-                        },
+                        "sample": (
+                            {
+                                "train_seed": 42,
+                                "selection_seed": 55,
+                                "train_limit": 40,
+                                "selection_limit": selection_limit,
+                            }
+                            if selection_seed == 55
+                            else {
+                                "seed": 42,
+                                "train_limit": 40,
+                                "selection_limit": selection_limit,
+                            }
+                        ),
                         "counts": {"train": 40, "selection": selection_limit},
                         "outputs": {
                             "train": {

@@ -74,6 +74,7 @@ _EXPORT_MODULES = {
     "SelectionDecision": "data",
     "SelectionScore": "data",
     "SplitRole": "data",
+    "SkillContractViolation": "errors",
     "StepTrainEvidence": "data",
     "TrainController": "data",
     "TrainEvidenceBatch": "data",

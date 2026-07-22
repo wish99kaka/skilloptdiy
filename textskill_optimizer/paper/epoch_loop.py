@@ -253,18 +253,25 @@ class PaperEpochLoop:
         rejected = (
             decision_event.event_type is AlgorithmEventType.CANDIDATE_REJECTED
         )
+        contract_rejected = fast_step.selection_skipped_reason is not None
         self._epoch_buffer.append(
             EpochBufferRecord(
                 epoch=state.epoch,
                 step=next_step,
                 failure_patterns=fast_step.failure_patterns,
-                rejected_edits=fast_step.ranked_edits if rejected else (),
+                rejected_edits=(
+                    fast_step.ranked_edits
+                    if rejected and not contract_rejected
+                    else ()
+                ),
                 rejected_suggestions=(
-                    fast_step.ranked_suggestions if rejected else ()
+                    fast_step.ranked_suggestions
+                    if rejected and not contract_rejected
+                    else ()
                 ),
                 score_delta=(
                     float(decision_event.payload["delta"])
-                    if rejected
+                    if rejected and not contract_rejected
                     else None
                 ),
             )
@@ -376,6 +383,15 @@ class PaperEpochLoop:
         common = {
             "previous_epoch_skill": previous_skill,
             "current_epoch_skill": current_epoch_skill,
+            **(
+                {
+                    "immutable_skill_contract": (
+                        self._controller.skill_contract_description
+                    )
+                }
+                if self._controller.skill_contract_description is not None
+                else {}
+            ),
             "longitudinal": longitudinal.to_prompt_payload(),
             "epoch_buffer": [
                 record.to_optimizer_payload() for record in self._epoch_buffer
@@ -702,11 +718,26 @@ class PaperEpochLoop:
         score_record = self._artifacts.add(
             PaperArtifactKind.SELECTION_SCORE,
             {
-                "role": "slow_candidate",
+                "role": (
+                    "carried_current"
+                    if slow_gate.selection_skipped_reason is not None
+                    else "slow_candidate"
+                ),
                 "score": slow_gate.candidate_score.value,
-                "skill_sha256": _sha256(slow_candidate),
+                "skill_sha256": _sha256(
+                    current_skill
+                    if slow_gate.selection_skipped_reason is not None
+                    else slow_candidate
+                ),
             },
-            parent_ids=(candidate_record.artifact_id, registry_id),
+            parent_ids=(
+                (
+                    candidate_record.artifact_id,
+                    self._require_artifact_head("current_score"),
+                )
+                if slow_gate.selection_skipped_reason is not None
+                else (candidate_record.artifact_id, registry_id)
+            ),
         )
         meta_record = self._artifacts.add(
             PaperArtifactKind.META_SKILL,
@@ -887,7 +918,10 @@ class PaperEpochLoop:
             },
             parent_ids=(apply_record.artifact_id,),
         )
-        carried_score = fast_step.skipped_stage is not None
+        carried_score = (
+            fast_step.skipped_stage is not None
+            or fast_step.selection_skipped_reason is not None
+        )
         score_record = self._artifacts.add(
             PaperArtifactKind.SELECTION_SCORE,
             {
@@ -895,7 +929,11 @@ class PaperEpochLoop:
                     "carried_current" if carried_score else "candidate"
                 ),
                 "score": fast_step.candidate_score.value,
-                "skill_sha256": fast_step.apply_result.output_sha256,
+                "skill_sha256": (
+                    _sha256(fast_step.input_skill)
+                    if carried_score
+                    else fast_step.apply_result.output_sha256
+                ),
             },
             parent_ids=(
                 (

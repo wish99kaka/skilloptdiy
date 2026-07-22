@@ -30,6 +30,7 @@ def build_runtime(
     longitudinal_fixture: bool = False,
     slow_selection_accept: bool = False,
     truncate_scheduled_batch: bool = False,
+    skill_validator=None,
 ):
     trajectories = [
         {
@@ -171,6 +172,7 @@ payload = (
             optimizer_backend=backend,
             selection=selection,
             train=train,
+            skill_validator=skill_validator,
         ),
         train,
     )

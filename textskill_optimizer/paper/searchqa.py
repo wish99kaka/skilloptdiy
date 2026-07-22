@@ -41,6 +41,10 @@ OFFICIAL_SEARCHQA_DEVELOPMENT_OUTPUT_SHA256_BY_SCHEMA = {
         "train": "807e3cee5e40652839df666b1e146420342036bcb36074f790487502480ccf67",
         "selection": "1282918538c2d23cc77ffe6764bcfad965c0ca34a8e9a5b18fa45ac905ebc927",
     },
+    "searchqa-development-materialization-v4": {
+        "train": "807e3cee5e40652839df666b1e146420342036bcb36074f790487502480ccf67",
+        "selection": "7ed69f990c00d975641db3c709fe4bd3ea563c9f2acf9b0f57af61f62ff35093",
+    },
 }
 
 
@@ -59,6 +63,7 @@ class SearchQAMaterialization:
 class SearchQADevelopmentMaterializationPolicy:
     schema_version: str
     seed: int
+    selection_seed: int
     train_limit: int
     selection_limit: int
 
@@ -71,12 +76,21 @@ _SEARCHQA_DEVELOPMENT_MATERIALIZATION_POLICIES = (
     SearchQADevelopmentMaterializationPolicy(
         schema_version="searchqa-development-materialization-v2",
         seed=42,
+        selection_seed=43,
         train_limit=40,
         selection_limit=5,
     ),
     SearchQADevelopmentMaterializationPolicy(
         schema_version="searchqa-development-materialization-v3",
         seed=42,
+        selection_seed=43,
+        train_limit=40,
+        selection_limit=20,
+    ),
+    SearchQADevelopmentMaterializationPolicy(
+        schema_version="searchqa-development-materialization-v4",
+        seed=42,
+        selection_seed=55,
         train_limit=40,
         selection_limit=20,
     ),
@@ -166,12 +180,15 @@ def get_searchqa_development_materialization_policy(
     train_limit: int,
     selection_limit: int,
     seed: int,
+    selection_seed: int | None = None,
 ) -> SearchQADevelopmentMaterializationPolicy:
+    effective_selection_seed = seed + 1 if selection_seed is None else selection_seed
     for policy in _SEARCHQA_DEVELOPMENT_MATERIALIZATION_POLICIES:
         if (
             policy.train_limit == train_limit
             and policy.selection_limit == selection_limit
             and policy.seed == seed
+            and policy.selection_seed == effective_selection_seed
         ):
             return policy
     raise SearchQAContractViolation(
@@ -199,6 +216,35 @@ def normalize_searchqa_answer(value: str) -> str:
     )
     normalized = re.sub(r"\b(a|an|the)\b", " ", normalized)
     return " ".join(normalized.split()).strip()
+
+
+def require_searchqa_skill_rollout_compatibility(
+    skill_text: str,
+    rollout_prompt: str,
+) -> None:
+    """Reject learned instructions that negate the frozen answer wrapper."""
+
+    if type(skill_text) is not str or not skill_text.strip():
+        raise SearchQAContractViolation("SearchQA skill must be non-empty")
+    if type(rollout_prompt) is not str or not rollout_prompt.strip():
+        raise SearchQAContractViolation("SearchQA rollout prompt must be non-empty")
+    rollout = rollout_prompt.lower()
+    if "<answer>" not in rollout or "</answer>" not in rollout:
+        return
+    normalized = re.sub(r"[`*_]", "", skill_text.lower())
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    conflicts = (
+        r"(?:do not|don't|never|must not|avoid|without)"
+        r"[^\n.]{0,160}<answer>",
+        r"<answer>[^\n.]{0,120}(?:must not|never|forbidden|prohibited)",
+        r"(?:no|without|avoid)(?: any)? (?:xml |markup )?"
+        r"(?:tags|delimiters|markup)",
+        r"(?:raw answer|plain text)(?: only| without markup)",
+    )
+    if any(re.search(pattern, normalized) for pattern in conflicts):
+        raise SearchQAContractViolation(
+            "learned skill contradicts the required <answer> rollout contract"
+        )
 
 
 def extract_searchqa_answer(response: str) -> str:
@@ -240,6 +286,7 @@ def select_searchqa_development_rows(
     train_limit: int,
     selection_limit: int,
     seed: int,
+    selection_seed: int | None = None,
 ) -> dict[str, tuple[SearchQAItem, ...]]:
     """Materialize only preregistered development IDs; test IDs are not accepted."""
 
@@ -251,6 +298,7 @@ def select_searchqa_development_rows(
         train_limit=train_limit,
         selection_limit=selection_limit,
         seed=seed,
+        selection_seed=selection_seed,
     )
     train_wanted = sampled["train"]
     selection_wanted = sampled["selection"]
@@ -305,11 +353,21 @@ def sample_searchqa_development_ids(
     train_limit: int,
     selection_limit: int,
     seed: int,
+    selection_seed: int | None = None,
 ) -> dict[str, tuple[str, ...]]:
     if type(seed) is not int:
         raise SearchQAContractViolation("SearchQA development seed must be an integer")
     train_wanted = _sample_ids(train_ids, train_limit, seed=seed)
-    selection_wanted = _sample_ids(selection_ids, selection_limit, seed=seed + 1)
+    effective_selection_seed = seed + 1 if selection_seed is None else selection_seed
+    if type(effective_selection_seed) is not int:
+        raise SearchQAContractViolation(
+            "SearchQA selection seed must be an integer"
+        )
+    selection_wanted = _sample_ids(
+        selection_ids,
+        selection_limit,
+        seed=effective_selection_seed,
+    )
     if set(train_wanted) & set(selection_wanted):
         raise SearchQAContractViolation(
             "SearchQA development train and selection ids must be disjoint"
@@ -469,11 +527,19 @@ def verify_searchqa_materialization_receipt(
         "test_commitment": OFFICIAL_SEARCHQA_ID_MANIFEST_SHA256["test"],
     }:
         raise SearchQAContractViolation("official SearchQA manifest identity drift")
-    if receipt["sample"] != {
+    expected_sample = {
         "seed": policy.seed,
         "train_limit": policy.train_limit,
         "selection_limit": policy.selection_limit,
-    } or receipt["counts"] != {
+    }
+    if policy.schema_version == "searchqa-development-materialization-v4":
+        expected_sample = {
+            "train_seed": policy.seed,
+            "selection_seed": policy.selection_seed,
+            "train_limit": policy.train_limit,
+            "selection_limit": policy.selection_limit,
+        }
+    if receipt["sample"] != expected_sample or receipt["counts"] != {
         "train": policy.train_limit,
         "selection": policy.selection_limit,
     }:
@@ -509,7 +575,21 @@ def verify_searchqa_materialization_receipt(
         train_limit=policy.train_limit,
         selection_limit=policy.selection_limit,
         seed=policy.seed,
+        selection_seed=policy.selection_seed,
     )
+    if policy.schema_version == "searchqa-development-materialization-v4":
+        primary = sample_searchqa_development_ids(
+            train_ids=train_ids,
+            selection_ids=selection_ids,
+            train_limit=policy.train_limit,
+            selection_limit=policy.selection_limit,
+            seed=42,
+            selection_seed=43,
+        )
+        if set(primary["selection"]) & set(sampled["selection"]):
+            raise SearchQAContractViolation(
+                "repeat SearchQA selection split overlaps the primary smoke split"
+            )
     if tuple(item.item_id for item in load_searchqa_items(actual_train)) != sampled[
         "train"
     ] or tuple(
